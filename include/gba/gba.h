@@ -117,6 +117,7 @@ struct GBA {
 	GamePak* gamepak; 					/* Cartridge containing allocated code and important info
 										   about the game */
 	bool run; 							/* Flag used to stop the emulator and check if its running */
+    unsigned long long frame;
 
 	/* Allocations */
 	uint8_t* IWRAM;

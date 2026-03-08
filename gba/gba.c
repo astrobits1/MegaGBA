@@ -23,8 +23,9 @@ bool initialiseSDL(GBA* gba) {
 void SDLEvents(GBA* gba) {
     /* We listen for events like keystrokes and window closing */
     SDL_Event event;
+
     while (SDL_PollEvent(&event)) {
-        if (event.type == SDL_QUIT) {
+        if (event.type == SDL_QUIT || event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE) {
             gba->run = false;
         }
     }
@@ -46,6 +47,7 @@ void initialiseGBA(GBA* gba, GamePak* gamepak) {
 	gba->run = false;
 	gba->SDL_Renderer = NULL;
 	gba->SDL_Window = NULL;
+    gba->frame = 0;
 
 	/* Initial Latched DISPCNT values */
 	gba->BG0_Flag = 0;
@@ -139,8 +141,6 @@ void startGBAEmulator(GamePak* gamepak) {
 		/* HBLANK is over, run the PPU to catch up */
 		stepPPU(&gba);
 	}
-
-	freeGBA(&gba);
 }
 
 /* -------- Bus Functions --------- */
