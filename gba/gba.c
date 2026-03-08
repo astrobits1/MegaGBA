@@ -17,6 +17,7 @@ bool initialiseSDL(GBA* gba) {
 
     SDL_SetWindowTitle(gba->SDL_Window, "MegaGBA");
     SDL_RenderSetScale(gba->SDL_Renderer, DISPLAY_SCALING, DISPLAY_SCALING);
+    SDL_RenderClear(gba->SDL_Renderer);
     return true;
 }
 

@@ -35,7 +35,6 @@ static char* condition(struct GBA* gba, uint8_t condCode) {
 
 static void BX(struct GBA* gba, uint32_t ins) {
 	printf("BX");
-	DEBUG_SET_BREAKPOINT("");
 }
 
 static void B(struct GBA* gba, uint32_t ins) {
@@ -454,6 +453,7 @@ void printStateARM(GBA* gba, uint32_t opcode) {
 	Dissembler_ARM_LUT[((opcode & 0x0FF00000) >> 16) | ((opcode >> 4) & 0xF)](gba, opcode);
 	printf("\n");
 
+#ifdef DEBUG_PRINT_REGS
 	uint32_t R[16];
 	memcpy(&R, &gba->REG, sizeof(uint32_t)*16);
 #ifdef DEBUG_LIMIT_REGS	
@@ -468,6 +468,7 @@ void printStateARM(GBA* gba, uint32_t opcode) {
 	printf("\n");
 #endif
 #endif
+#endif
 }
 
 void printStateTHUMB(GBA* gba, uint16_t opcode) {
@@ -477,6 +478,7 @@ printf("[T][%08x][N%dS%dC%dV%d] ", gba->REG[R15] - 4,
 	Dissembler_THUMB_LUT[opcode >> 8](gba, opcode);
 	printf("\n");
 
+#ifdef DEBUG_PRINT_REGS
 	uint32_t R[16];
 	memcpy(&R, &gba->REG, sizeof(uint32_t)*16);
 #ifdef DEBUG_LIMIT_REGS	
@@ -490,6 +492,7 @@ printf("[T][%08x][N%dS%dC%dV%d] ", gba->REG[R15] - 4,
 	Dissembler_THUMB_LUT[opcode >> 8](gba, opcode);
 	printf("\n");
 #endif	
+#endif
 #endif
 }
 
