@@ -43,12 +43,11 @@ void cleanSDL(GBA* gba) {
 
 /* ----------------------------------------------------- */
 
-void initialiseGBA(GBA* gba, GamePak* gamepak) {
+void initialiseGBA(GBA* gba, GamePak* gamepak, uint8_t* biosBuffer, size_t biosSize) {
 	gba->gamepak = gamepak;
 	gba->run = false;
 	gba->SDL_Renderer = NULL;
 	gba->SDL_Window = NULL;
-    gba->frame = 0;
 
 	/* Initial Latched DISPCNT values */
 	gba->BG0_Flag = 0;
@@ -73,14 +72,15 @@ void initialiseGBA(GBA* gba, GamePak* gamepak) {
 		exit(89);
 	}
 
+    gba->biosROM    = biosBuffer;
+    gba->biosSize   = biosSize;
+
 	gba->IWRAM 		= IWRAM;
 	gba->EWRAM 		= EWRAM;
 	gba->IO    		= IO;
 	gba->PaletteRAM = PaletteRAM;
 	gba->VRAM 		= VRAM;
 	gba->OAM 		= OAM;
-
-
 
 	/* Initialise all IO memory to 0 */
 	memset(gba->IO, 0, 0x3FF);
@@ -109,6 +109,10 @@ void freeGBA(GBA* gba) {
 	free(gba->VRAM);
 	free(gba->OAM);
 
+    /* BIOS ROM is cleaned by main */
+    gba->biosROM = NULL;
+    gba->biosSize = 0;
+
 	gba->IWRAM = NULL;
 	gba->EWRAM = NULL;
 	gba->IO = NULL;
@@ -117,9 +121,9 @@ void freeGBA(GBA* gba) {
 	gba->OAM = NULL;
 }
 
-void startGBAEmulator(GamePak* gamepak) {
+void startGBAEmulator(GamePak* gamepak, uint8_t* biosBuffer, size_t biosSize) {
 	GBA gba;
-	initialiseGBA(&gba, gamepak);
+	initialiseGBA(&gba, gamepak, biosBuffer, biosSize);
 
 	gba.run = true;
 
@@ -168,7 +172,19 @@ static inline void littleEndian16Encode(uint8_t* ptr, uint16_t value) {
 
 uint32_t busRead(GBA* gba, uint32_t address, uint8_t size) {
 	/* We're reading a 32/16/8 bit value from the given address */
-	if (address >= EXT_ROM0_32MB && address <= EXT_ROM2_32MB_END) {
+    if (address >= BIOS_ROM_16KB && address <= BIOS_ROM_16KB_END) {
+        /* Read from BIOS ROM that may or may not be available */
+        if (gba->biosROM == NULL) return 0;
+        if (address > gba->biosSize-1) return 0;
+
+        uint8_t* ptr = &gba->biosROM[address];
+
+        switch (size) {
+			case WIDTH_32: return littleEndian32Decode(ptr);
+	    	case WIDTH_16: return littleEndian16Decode(ptr);
+			case WIDTH_8:  return *ptr;
+		}
+    } else if (address >= EXT_ROM0_32MB && address <= EXT_ROM2_32MB_END) {
 		uint32_t relativeAddress;
 
 		switch ((address >> 24) & 0xF) {

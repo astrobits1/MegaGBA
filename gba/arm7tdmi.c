@@ -10,6 +10,8 @@ static void flushRefillPipeline(GBA*);
 static inline void doInternalPrefetchARM(GBA* gba);
 static void switchMode(GBA* gba, CPU_MODE newMode);
 static bool checkCondition(GBA*, uint8_t);
+static void requestException(GBA*, CPU_EXCEP);
+static void returnException(GBA*);
 /* ---------------------- CPSR Functions ---------------------- */
 
 static inline CPU_MODE CPSR_GetMode(GBA* gba) {
@@ -48,6 +50,7 @@ static uint32_t barrelShifter(GBA* gba, uint8_t shiftType, uint32_t operand, uin
 	 * 1 -> Logical Right Shift 	(LSR)
 	 * 2 -> Arithmetic Right Shift 	(ASR)
 	 * 3 -> Rotate Right            (ROR)
+     * 4 -> Rotate Right Extended   (RRX)*
 	 *
 	 * Carry should be set to a default value before calling this function
 	 * When no shift operation occurs, carry is unchanged. This is normally for LSL and LSR.
@@ -65,50 +68,55 @@ static uint32_t barrelShifter(GBA* gba, uint8_t shiftType, uint32_t operand, uin
 				operand = 0;
 			} else {
 				*carry = (operand >> (32 - amount)) & 1;
-				operand <<= amount;
+				operand = ((uint64_t)operand << amount) & 0xFFFFFFFF;
 			}
 			break;
 		}
 		case 1: {	// Logical Right
-			if (amount == 0) return operand; 				// ??
+			if (amount == 0) return operand;
 			if (amount > 32) {
 				*carry = 0;
 				operand = 0;
 			} else {
 				*carry = (operand >> (amount - 1)) & 1;
-				operand >>= amount;
+				operand = ((uint64_t)operand >> amount) & 0xFFFFFFFF;
 			}
 			break;
 		}
 		case 2: { 	// Arithmetic Right
-			if (amount == 0 || amount > 32) amount = 32; 			// 0 is treated as 32
+            if (amount == 0) return operand;
+			if (amount > 32) amount = 32;
 			uint8_t bit31 = operand >> 31;
 			*carry = (operand >> (amount - 1)) & 1;
-			operand >>= amount;
+			operand = ((uint64_t)operand >> amount) & 0xFFFFFFFF;
 
 			/* Set shifted in bits at left to 1, if bit 31 is set, otherwise they're 0 */
 			if (bit31) operand |= (uint32_t)(0xFFFFFFFF << (32 - amount));
 			break;
 		}
-		case 3: {	// Rotate Right
-			if (amount == 0) {
-				// RRX
-				*carry = operand & 1;
-				operand >>= 1;
-				operand |= CPSR_GetBit(gba, FLG_C) << 31;
-			} else {
-				// Normal
-				if (amount > 32) {
-					amount %= 32;
-					if (amount == 0) amount = 32;
-				}
-				*carry = (operand >> (amount - 1)) & 1;
-				uint32_t shiftedOut = operand & (0xFFFFFFFF >> (32 - amount));
-				operand >>= amount;
-				operand |= shiftedOut << (32 - amount);
+		case 3: {	// Rotate Right	
+			// Normal
+            if (amount == 0) return operand;
+			if (amount > 32) {
+				amount %= 32;
+				if (amount == 0) amount = 32;
 			}
+
+			*carry = (operand >> (amount - 1)) & 1;
+			uint32_t shiftedOut = operand & (0xFFFFFFFF >> (32 - amount));
+			operand = ((uint64_t)operand >> amount) & 0xFFFFFFFF;
+			operand |= shiftedOut << (32 - amount);
 			break;
 		}
+        case 4: {
+			// Rotate Right Extended - RRX
+            // Special barrel shifter function encoded by ROR #0 (only immediate)
+            // No 'amount' parameter
+			*carry = operand & 1;
+			operand >>= 1;
+			operand |= CPSR_GetBit(gba, FLG_C) << 31;
+			break;
+        }
 	}
 
 	return operand;
@@ -151,12 +159,12 @@ static void branchAndExchange(GBA* gba, uint32_t address) {
 	if (address & 1) {
 		/* Switch to THUMB */
 		address &= ~((uint32_t)1); 					// Clear lower bit to HW align
-		CPSR_SetBit(gba, CPSR_THUMB);
+		CPSR_SetBit(gba, CPSR_T);
 		gba->cpu_state = CPU_STATE_THUMB;
 	} else {
 		/* Switch to ARM */
 		address &= ~((uint32_t)3); 					// Clear lower 2 bits to W align
-		CPSR_ClearBit(gba, CPSR_THUMB);
+		CPSR_ClearBit(gba, CPSR_T);
 		gba->cpu_state = CPU_STATE_ARM;
 	}
 
@@ -183,7 +191,9 @@ static void B_BL(struct GBA* gba, uint32_t ins) {
     /* 24 bit 2s complement becomes 26 bit when shifted by 2, this means sign bit is bit 25 */
 	uint32_t offset = (ins & 0xFFFFFF) << 2;
 
-    gba->REG[R15] = twosComplementOffset(gba->REG[R15], offset, 25);	
+    uint32_t jump = twosComplementOffset(gba->REG[R15], offset, 25);
+    gba->REG[R15] = jump;
+
 	flushRefillPipeline(gba);
 }
 
@@ -193,6 +203,7 @@ static uint32_t getDataProcessing_RxOP2(GBA* gba, uint16_t OP2, uint8_t* carry) 
 
 	uint16_t reg = OP2 & 0xF;
 	uint32_t data = gba->REG[reg];
+    uint8_t shiftType = (OP2 >> 5) & 0b11;
 
 	// Default carry - Unchanged
 
@@ -201,29 +212,50 @@ static uint32_t getDataProcessing_RxOP2(GBA* gba, uint16_t OP2, uint8_t* carry) 
 	if ((OP2 >> 4) & 1) {
 		/* Shift amount stored in register */
 		amount = gba->REG[OP2 >> 8] & 0xFF;
-		if (reg == R15) {
-			/* If we're dealing with PC as operand 2, with shift stored in a register
-			 * since an extra internal cycle is consumed by the CPU, so we read PC+12*/
+        if (reg == R15) {
+		    /* If we're dealing with register specified operand 2 shift with PC as operand 1 or 2, 
+             * then an extra internal cycle is consumed by the CPU, so we read PC+12*/
 
-			data += 4;
-		}
+		    data += 4;
+        }
 	} else {
 		/* Shift amount in immediate value */
 		amount = OP2 >> 7;
+
+
+        if ((shiftType == 1 || shiftType == 2) && amount == 0) {
+            /* LSR/ASR with immediate shift amount = 0 is a very special case
+             * Rather, an encoding in itself that sets shift amount to #32
+             * Feeding 0 into LSR/ASR through a register DOES NOT create the same behaviour
+             * and would treated like actual LSR/ASR #0
+             *
+             * LSL #0 does what its expected, i.e nothing but additionally preserves carry 
+             */
+            amount = 32;
+        } else if (shiftType == 3 && amount == 0) {
+            /* Special encoding for RRX, that is ROR #0 (immediate only) */
+            return barrelShifter(gba, 4, data, 0, carry);
+        }
 	}
 
-	uint32_t shifted = barrelShifter(gba, (OP2 >> 5) & 0b11, data, amount, carry);
+	uint32_t shifted = barrelShifter(gba, shiftType, data, amount, carry);
 	return shifted;
 }
 
-static uint32_t getDataProcessing_ImmOP2(GBA* gba, uint16_t OP2) {
+static uint32_t getDataProcessing_ImmOP2(GBA* gba, uint16_t OP2, uint8_t* carry) {
 	uint32_t Imm = (uint32_t)(OP2 & 0xFF);
 	uint8_t rotate = ((OP2 >> 8) & 0xF) * 2;
 
+    uint32_t result = barrelShifter(gba, 3, Imm, rotate, carry);
+
+    /* This instruction uses the same barrel shifter, hence carry will be affected accordingly */
+    /*
 	uint32_t shiftedOut = Imm & (0xFFFFFFFF >> (32 - rotate));
 	Imm >>= rotate;
 	Imm |= shiftedOut << (32 - rotate);
-	return Imm;
+    */
+
+	return result;
 }
 
 static void dataProcessingLogical(struct GBA* gba, uint32_t ins) {
@@ -233,10 +265,20 @@ static void dataProcessingLogical(struct GBA* gba, uint32_t ins) {
 	uint8_t S = (ins >> 20) & 1;
 	uint8_t I = (ins >> 25) & 1;
 
-	uint32_t OP1  = gba->REG[(ins >> 16) & 0xF];
-	uint32_t OP2  = I ? getDataProcessing_ImmOP2(gba, ins & 0xFFF) :
+    uint8_t OP1_REG = (ins >> 16) & 0xF;
+	uint32_t OP1  = gba->REG[OP1_REG];
+	uint32_t OP2  = I ? getDataProcessing_ImmOP2(gba, ins & 0xFFF, &carry) :
 						getDataProcessing_RxOP2(gba, ins & 0xFFF, &carry);
 	uint8_t DestReg = (ins >> 12) & 0xF;
+
+    if (!I && (OP1_REG == R15) && (ins >> 4) & 1) {
+        /* A special case when register specified shift is being used for operand 2
+         * and operand 1 is R15. This causes an extra internal cycle before ALU processing
+         * and hence PC+12 is read in OP1 instead of PC+8.
+         *
+         * This happens for R15 as operand 2 aswell which is handled in RxOP2 */
+        OP1 += 4;
+    }
 
 	/* ---------------------------------------------------------- */
 	uint8_t opcode = ins >> 21 & 0xF;
@@ -290,12 +332,12 @@ static void dataProcessingLogical(struct GBA* gba, uint32_t ins) {
 
 	/* ---------------------------------------------------------- */
 	if (DestReg == R15) {
-	 	/* If S flag is set, SPSR is copied to CPSR.
+	 	/* If S flag is set, exception return is triggered
 		 * If S flag is not set, result is written normally but CPSR is not changed
 		 * Writing to R15 also flushes the pipeline */
 
 		if (S && (gba->cpu_mode != CPU_MODE_USER && gba->cpu_mode != CPU_MODE_SYSTEM)) {
-			gba->CPSR = gba->SPSR;
+			returnException(gba);
 		}
 
 		if (!testInstruction) {
@@ -304,7 +346,7 @@ static void dataProcessingLogical(struct GBA* gba, uint32_t ins) {
 		}
 	} else {
 		if (S) {
-			if (!I) CPSR_ModifyBit(gba, FLG_C, carry);
+			CPSR_ModifyBit(gba, FLG_C, carry);
 			CPSR_ModifyBit(gba, FLG_Z, result == 0);
 			CPSR_ModifyBit(gba, FLG_N, result >> 31);
 		}
@@ -320,10 +362,20 @@ static void dataProcessingArithmetic(struct GBA* gba, uint32_t ins) {
 	uint8_t S = (ins >> 20) & 1;
 	uint8_t I = (ins >> 25) & 1;
 
-	uint32_t OP1  = gba->REG[(ins >> 16) & 0xF];
-	uint32_t OP2  = I ? getDataProcessing_ImmOP2(gba, ins & 0xFFF) :
+    uint8_t OP1_REG = (ins >> 16) & 0xF;
+	uint32_t OP1  = gba->REG[OP1_REG];
+	uint32_t OP2  = I ? getDataProcessing_ImmOP2(gba, ins & 0xFFF, &x) :
 						getDataProcessing_RxOP2(gba, ins & 0xFFF, &x);
 	uint8_t DestReg = (ins >> 12) & 0xF;
+
+    if (!I && (OP1_REG == R15) && (ins >> 4) & 1) {
+        /* A special case when register specified shift is being used for operand 2
+         * and operand 1 is R15. This causes an extra internal cycle before ALU processing
+         * and hence PC+12 is read in OP1 instead of PC+8.
+         *
+         * This happens for R15 as operand 2 aswell which is handled in RxOP2 */
+        OP1 += 4;
+    }
 	/* ---------------------------------------------------------- */
 	uint8_t opcode = ins >> 21 & 0xF;
 	uint32_t result = 0;
@@ -408,11 +460,11 @@ static void dataProcessingArithmetic(struct GBA* gba, uint32_t ins) {
 
 	/* ---------------------------------------------------------- */
 	if (DestReg == R15) {
-		/* If S flag is set, SPSR is copied to CPSR.
+		/* If S flag is set, exception return is triggered.
 		 * If S flag is not set, result is written normally but CPSR is not changed
 		 * Writing to R15 also flushes the pipeline */
 		if (S && (gba->cpu_mode != CPU_MODE_USER && gba->cpu_mode != CPU_MODE_SYSTEM)) {
-			gba->CPSR = gba->SPSR;
+			returnException(gba);
 		}
 
 		if (!testInstruction) {
@@ -453,62 +505,49 @@ static void MRS(struct GBA* gba, uint32_t ins) {
 
 static void MSR(struct GBA* gba, uint32_t ins) {
 	/* Move Register/Imm to xPSR */
-	uint8_t destination = ins >> 22 & 1;
-	uint8_t b16 = (ins >> 16) & 1;
+	uint8_t C = (ins >> 16) & 1;
+	uint8_t I = ins >> 25 & 1;
+	uint8_t toSPSR  = ins >> 22 & 1;
+	uint32_t data = 0;
 
+    /* Write to SPSR only makes sense in correct mode */
+	if (toSPSR && (gba->cpu_mode == CPU_MODE_USER || gba->cpu_mode == CPU_MODE_SYSTEM)) return;
+    /* Control bit writing is disabled for USER mode */
+    if (gba->cpu_mode == CPU_MODE_USER) {C = 0;}
 
-	if (b16) {
-		/* Transfer register to xPSR */
-		uint8_t Rm = ins & 0xF;
-		uint32_t content = gba->REG[Rm];
-
-		// R15 as destination not allowed
-		if (Rm == R15) return;
-
-		if (destination == 0) {
-			/* CPSR */
-			if (gba->cpu_mode == CPU_MODE_USER) {
-				/* Dont modify control bits */
-				gba->CPSR &= 0x000000FF;
-				content   &= 0xFFFFFF00;
-				gba->CPSR |= content;
-			} else {
-				gba->CPSR = content;
-
-				/* Since control bits can be modified, a mode switch is possible */
-				switchMode(gba, content & 0x1F);
-			}
-		} else {
-			/* SPSR */
-			if (gba->cpu_mode == CPU_MODE_USER || gba->cpu_mode == CPU_MODE_SYSTEM) return;
-			gba->SPSR = content;
-		}
+	if (I) {
+        /* Rotation happens in immediate read, which could modify carry */ 
+        uint8_t carry = CPSR_GetBit(gba, FLG_C);
+		data = getDataProcessing_ImmOP2(gba, ins & 0xFFF, &carry);
+        CPSR_ModifyBit(gba, FLG_C, carry);
 	} else {
-		/* Transfer register/imm to xPSR flag bits only */
-		uint8_t I = ins >> 25 & 1;
-		uint8_t destination  = ins >> 22 & 1;
-		uint32_t content = 0;
-
-		if (I) {
-			content = getDataProcessing_ImmOP2(gba, ins & 0xFFF);
-		} else {
-			/* Register */
-			// Destination R15 not allowed
-			if ((ins & 0xF) == R15) return;
-			content = gba->REG[ins & 0xF];
-		}
-
-		if (destination == 0) {
-			/* CPSR */
-			gba->CPSR &= 0x0FFFFFFF;
-			gba->CPSR |= content & 0xF0000000;
-		} else {
-			/* SPSR */
-			if (gba->cpu_mode == CPU_MODE_USER || gba->cpu_mode == CPU_MODE_SYSTEM) return;
-			gba->SPSR &= 0x0FFFFFFF;
-			gba->SPSR |= content & 0xF0000000;
-		}
+		/* Register
+		* Destination R15 not allowed
+        */
+		if ((ins & 0xF) == R15) return;
+		data = gba->REG[ins & 0xF];
 	}
+
+    if (C) {
+        /* Flags and Control Enabled */
+        data &= 0xFF0000FF;
+        /* Write to CPSR/SPSR T bit is allowed here, but doesnt do any mode switch */
+        if (toSPSR) {
+            gba->SPSR = data;
+        } else {
+            gba->CPSR = data;
+            /* Since control bits can be written, mode swap is possible */
+            switchMode(gba, data & 0x1F);
+        }
+    } else {
+        /* Only Flags enabled */
+        data &= 0xFF000000;
+        if (toSPSR) {
+            gba->SPSR = data | (gba->SPSR & 0xFF);
+        } else {
+            gba->CPSR = data | (gba->CPSR & 0xFF);
+        }
+    }	
 }
 
 static void MUL_MLA(struct GBA* gba, uint32_t ins) {
@@ -612,13 +651,18 @@ static void LDR_STR(struct GBA* gba, uint32_t ins) {
 
 	if (P) {
 		/* Pre - Add offset before transfer */
-		base += U ? offset : -offset;
-
-		if (W) gba->REG[Rn] = base; 				/* If write-back is required, do it */
+		base += U ? offset : -offset;	
 	}
+
+#define WRITEBACK() if (!P) gba->REG[Rn] = base + (U ? offset : -offset); \
+	                else if (W) gba->REG[Rn] = base;
 
 	if (L) {
 		/* LDR */
+
+        /* Writeback happens before data transfer to register for LDR */
+        WRITEBACK();
+
 		if (B) {
 			/* LDR BYTE */
 			gba->REG[Rd] = busRead(gba, base, WIDTH_8);
@@ -628,10 +672,10 @@ static void LDR_STR(struct GBA* gba, uint32_t ins) {
 			 * the addressed byte always occupies first byte on the register */
 			uint8_t alignOffset = base & 0x3; 			/* Can be 0-3 */
 			uint32_t word = busRead(gba, base & ~0x3, WIDTH_32);
-			uint32_t trailing = word >> 8 * (4 - alignOffset);
+            uint32_t trailing = word & ((1 << (alignOffset*8))-1);
 
-			word <<= alignOffset * 8;
-			word |= trailing;
+            word >>= alignOffset * 8;
+            word |= trailing << (32-(alignOffset*8));
 			gba->REG[Rd] = word;
 		}
 
@@ -639,7 +683,7 @@ static void LDR_STR(struct GBA* gba, uint32_t ins) {
 	} else {
 		/* STR */
 		uint32_t source = gba->REG[Rd];
-		if (Rd == R15) source += 4; 		/* PC+12 */
+		if (Rd == R15) {source += 4;} 		/* PC+12 */
 		if (B) {
 			/* STR BYTE */
 			busWrite(gba, base, source & 0xFF, WIDTH_8);
@@ -648,15 +692,12 @@ static void LDR_STR(struct GBA* gba, uint32_t ins) {
 			 * Address is always treated as word aligned */
 			busWrite(gba, base & ~0x3, source, WIDTH_32);
 		}
-	}
 
-	if (!P) {
-		/* Post - Add offset after transfer */
-		base += U ? offset : -offset;
-		/* Write-back is forced */
-		gba->REG[Rn] = base;
-	}
 
+        /* Writeback happens after data write for STR */
+        WRITEBACK();
+	}
+#undef WRITEBACK
 }
 
 static void LDR_STR_H_SB_SH(struct GBA* gba, uint32_t ins) {
@@ -681,9 +722,12 @@ static void LDR_STR_H_SB_SH(struct GBA* gba, uint32_t ins) {
 	if (P) {
 		/* Pre - Add offset before transfer */
 		base += U ? offset : -offset;
-
-		if (W) gba->REG[Rn] = base; 				/* If write-back is required, do it */
 	}
+
+    /* Writeback is done before memory read for LD and after memory write for ST */
+#define WRITEBACK() if (!P) gba->REG[Rn] = base + (U ? offset : -offset); \
+	                else if (W) gba->REG[Rn] = base;
+
 
 	switch (ins >> 5 & 0x3)	{
 		/* 0 will never occur as its decoded as an SWP */
@@ -692,20 +736,37 @@ static void LDR_STR_H_SB_SH(struct GBA* gba, uint32_t ins) {
 			 * The addresses should always be halfword aligned or otherwise it causes
 			 * unpredictable reads/writes on the GBA, we tackle that issue by force clearing b0 */
 			if (L) {
-				// LDRH - Clear out bit 0 as address should always be Halfword aligned
-				gba->REG[Rd] = busRead(gba, base & ~1, WIDTH_16);
+				/* LDRH - if bit 0 is set, we rotate the half word such that the indexed byte gets
+                 * loaded at the least signifant byte of the register
+                 * Following from how word misalignment rotation works in LDR */ 
+
+                WRITEBACK();
+
+				uint32_t data = busRead(gba, base & ~1, WIDTH_16);
+
+                if (base & 1) {
+                    uint8_t temp = data & 0xFF;
+                    data >>= 8;
+                    data |= temp << 24;
+                }
+                
+                gba->REG[Rd] = data;
                 if (Rd == R15) flushRefillPipeline(gba);
 			} else {
-				// STRH - Clear out bit 0 for halfword alignment
+				/* STRH - Bit 0 is cleared for halfword alignment */ 
 				/* PC+12 if Rd == R15 */
 				if (Rd == R15) busWrite(gba, base & ~1, (gba->REG[Rd] + 4) & 0xFFFF, WIDTH_16);
 				else busWrite(gba, base & ~1, gba->REG[Rd] & 0xFFFF, WIDTH_16);
+
+                WRITEBACK(); 
 			}
 			break;
 		}
 		case 2: {
 			/* Operate with signed bytes (LDRSB)
 			 * Bit 7 is repeated across bits 31-8 of register to preserve sign */
+            WRITEBACK(); 
+
 			uint32_t value = busRead(gba, base, WIDTH_8);
 			if (value >> 7 & 1) value |= 0xFFFFFF00;
 			gba->REG[Rd] = value;
@@ -715,20 +776,31 @@ static void LDR_STR_H_SB_SH(struct GBA* gba, uint32_t ins) {
 		case 3: {
 			/* Signed Halfwords (LDRSH)
 			 * Bit 15 is repeated across bits 31-16 of register to preserve sign */
-			uint32_t value = busRead(gba, base & ~1, WIDTH_16);
-			if (value >> 15 & 1) value |= 0xFFFF0000;
-			gba->REG[Rd] = value;
+            WRITEBACK(); 
+
+			uint32_t data = busRead(gba, base & ~1, WIDTH_16);
+            uint8_t b15 = data >> 15 & 1;
+
+            if (base & 1) {
+                /* If address is not halfword aligned, do LDR style rotate 
+                 * but then set the preceding bits to bit 15 */
+                data >>= 8;
+
+                if (b15) data |= 0xFFFFFF00;
+                else data &= 0xFF;
+            } else {
+                /* If address is halfword aligned, we can just repeat bit 15 on the rest of
+                 * the bits to the left */
+                if (b15) data |= 0xFFFF0000;
+                else data &= 0xFFFF;
+            }
+
+			gba->REG[Rd] = data;
             if (Rd == R15) flushRefillPipeline(gba);
 			break;
 		}
 	}
-
-	if (!P) {
-		/* Post - Add offset after transfer */
-		base += U ? offset : -offset;
-		/* Write-back is forced */
-		gba->REG[Rn] = base;
-	}
+#undef WRITEBACK
 }
 
 static void LDM_STM(struct GBA* gba, uint32_t ins) {
@@ -913,10 +985,13 @@ static void SWP(struct GBA* gba, uint32_t ins) {
 
 
 static void SWI(struct GBA* gba, uint32_t ins) {
-	/* To be implemented after impementing traps and mode switches */
+	/* Triggers the SWI exception */
+    requestException(gba, CPU_EXCEP_SWI);
 }
 
 static void Undefined_ARM(struct GBA* gba, uint32_t ins) {
+    /* Triggers the UNDEFINED exception */
+    requestException(gba, CPU_EXCEP_UNDEFINED);
 }
 
 static void Unimplemented_ARM(struct GBA* gba, uint32_t ins) {
@@ -1419,6 +1494,7 @@ static void LOAD_ADDRESS_THUMB(struct GBA* gba, uint16_t ins) {
     uint8_t Rd = (ins >> 8) & 0b111;
     uint8_t SP = (ins >> 11) & 1;
 
+    
     if (SP) {
         /* Read from SP */
         uint32_t address = gba->REG[R13] + (offset8 << 2);
@@ -1426,8 +1502,8 @@ static void LOAD_ADDRESS_THUMB(struct GBA* gba, uint16_t ins) {
     } else {
         /* Read from PC 
          * Bit 1 of PC is forced to 0 */
-        uint32_t address = (gba->REG[R15] & ~0b10) + (offset8 << 2);
-        gba->REG[Rd] = busRead(gba, address, WIDTH_32);
+        uint32_t address = (gba->REG[R15] & (~0b10)) + (offset8 << 2);
+        gba->REG[Rd] = address;
     }
 }
 
@@ -1576,6 +1652,7 @@ static void LONG_BRANCH_W_LINK(struct GBA* gba, uint16_t ins) {
 
 static void SWI_THUMB(struct GBA* gba, uint16_t ins) {
     /* THUMB Software interrupt */
+    requestException(gba, CPU_EXCEP_SWI);
 }
 
 
@@ -1699,18 +1776,27 @@ static bool checkCondition(GBA* gba, uint8_t condCode) {
 }
 
 static inline uint32_t readARMOpcode(GBA* gba) {
-	/* Read from the bus using the address at PC then increment it */
-	uint32_t opcode = busRead(gba, gba->REG[R15], WIDTH_32);
-	gba->REG[R15] += 4;
+	/* Increment PC then read, this is done to handle pipeline behaviour in combination
+     * with the first read being with peek */
 
+    gba->REG[R15] += 4;
+	uint32_t opcode = busRead(gba, gba->REG[R15], WIDTH_32);
 	return opcode;
 }
 
+static inline uint32_t peekARMOpcode(GBA* gba) {
+    return busRead(gba, gba->REG[R15], WIDTH_32);
+}
+
 static inline uint16_t readTHUMBOpcode(GBA* gba) {
-	uint16_t opcode = busRead(gba, gba->REG[R15], WIDTH_16);
 	gba->REG[R15] += 2;
 
+	uint16_t opcode = busRead(gba, gba->REG[R15], WIDTH_16);
 	return opcode;
+}
+
+static inline uint32_t peekTHUMBOpcode(GBA* gba) {
+    return busRead(gba, gba->REG[R15], WIDTH_16);
 }
 
 static void dispatchARM(GBA* gba, uint32_t opcode) {
@@ -1908,13 +1994,16 @@ void initialiseCPU(GBA* gba) {
 	gba->BANK_SVC[R13_SVC] = 0x03007FE0;
 	gba->BANK_IRQ[R13_IRQ] = 0x03007FA0;
 	gba->REG[R13] 		   = 0x03007F00;
-	gba->REG[R15] 		   = 0x08000000;
 	gba->CPSR 			   = 0x6000001F; 	// ARM State, System Mode
-	gba->SPSR    		   = 0xFFFFFFFF;    // SPSR cannot be read in USER/SYSTEM mode */
+	gba->SPSR    		   = 0xFFFFFFFF;    // SPSR cannot be read in USER/SYSTEM mode */ 
+	gba->REG[R15] 		   = 0x08000000;
 
 	/* Setup Lookup Tables */
 	initialiseLUT_ARM(gba);
 	initialiseLUT_THUMB(gba);
+
+    /* Exceptions */
+    gba->exceptionState = 0;
 
 	/* Other values */
 	memset(&gba->pipeline, 0, 3*sizeof(uint32_t));
@@ -1923,13 +2012,21 @@ void initialiseCPU(GBA* gba) {
 	gba->skipFetch = false;
 	gba->cycles = 0;
 
-	flushRefillPipeline(gba); 		gba->skipFetch = false;
+	flushRefillPipeline(gba);
+    gba->skipFetch = false;
 }
 
 static inline void insertPipeline(GBA* gba, uint32_t opcode) {
 	gba->pipeline[gba->pipelineInsertPoint++] = opcode;
 	gba->pipelineInsertPoint %= 3;
 
+}
+
+static inline uint32_t peekPipeline(GBA* gba, uint8_t offset) {
+    /* 0 -> next in execution (decoded state)
+     * 1 -> next to next in execution (fetched state) 
+     * Assuming peak is done during dispatch */
+    return gba->pipeline[gba->pipelineReadPoint+offset];
 }
 
 static inline uint32_t readPipeline(GBA* gba) {
@@ -1946,15 +2043,32 @@ static void flushRefillPipeline(GBA* gba) {
 	gba->pipelineReadPoint = 0;
 
 	if (gba->cpu_state == CPU_STATE_ARM) {
+		insertPipeline(gba, peekARMOpcode(gba));
 		insertPipeline(gba, readARMOpcode(gba));
-		insertPipeline(gba, readARMOpcode(gba));
+        insertPipeline(gba, readARMOpcode(gba));
 	} else {
+		insertPipeline(gba, peekTHUMBOpcode(gba));
 		insertPipeline(gba, readTHUMBOpcode(gba));
-		insertPipeline(gba, readTHUMBOpcode(gba));
+        insertPipeline(gba, readTHUMBOpcode(gba));
 	}
-	gba->skipFetch = true; 							/* Set flag in emulator so pipeline operations
-														   after the current execution stage are
-														   discarded */
+
+    /* The pipeline is pushed to full once again ready for execution, and the proceeding
+     * fetch is skipped.
+     *
+     * The PC register (R15) is not actually incremented after fetch, but only during the decode
+     * stage, which is why we get a (current address + 8) read when probing PC within the executing
+     * instruction instead of +12. If it were incremented at the end of fetch we would get +12.
+     * So essentially what must be done to simulate that behaviour is skipping PC increment on the
+     * first fetch after every pipeline flush (i.e the first fetch of the fresh pipeline only).
+     * And then consequently incrementing PC before read. This allows us to fully capture that
+     * behaviour.
+     *
+     * An exception might also occur after this pipeline flush, in which case these newly
+     * fetched values can be used to store in LR */
+
+	gba->skipFetch = true; 							
+    /* Set flag in emulator so pipeline operations
+	 after the current execution stage are discarded */
 }
 
 static inline void doInternalPrefetchARM(GBA* gba) {
@@ -1975,6 +2089,108 @@ static inline void doInternalPrefetchARM(GBA* gba) {
 	gba->skipFetch = true;
 }
 
+/* ----------------------------------------------------------------- */
+/*                       Exception Handling                          */
+
+static void requestException(GBA* gba, CPU_EXCEP excep) {
+    /* Exception can be requested any time during the execution/prefetching 
+     * Handling is done at a fixed time, i.e after execution */
+    gba->exceptionState |= 1 << excep;
+}
+
+static void triggerException(GBA* gba, CPU_EXCEP excep) {
+    /* Given we need to handle a particular exception, this function follows the procedure 
+     * It is called at the end of dispatch, before the next execution takes place 
+     *
+     * Note: If we were to simulate PC+12 behaviour naturally, at the end of instructions
+     * the PC might not be where we expect it to be and calculating the next instruction in the
+     * pipeline would be more painful.
+     * */
+    uint32_t retPC;
+    uint32_t vector;
+    uint32_t CPSR = gba->CPSR;
+
+    switch (excep) {
+        case CPU_EXCEP_FIQ: {
+            /* Address of instruction that was supposed to execute next
+             *      + 4 for ARM and THUMB */
+            retPC = gba->cpu_state == CPU_STATE_ARM ? gba->REG[R15] : gba->REG[R15]+2;
+            vector = 0x1C;
+            switchMode(gba, CPU_MODE_FIQ);
+            CPSR_SetBit(gba, CPSR_FIQ_DIS);
+            break;
+        }
+        case CPU_EXCEP_IRQ: {
+            /* ''''''''''''' */ 
+            retPC = gba->cpu_state == CPU_STATE_ARM ? gba->REG[R15] : gba->REG[R15]+2;
+            vector = 0x18;
+            switchMode(gba, CPU_MODE_IRQ);
+            break;
+        }
+        case CPU_EXCEP_SWI: {
+            /* Address of instruction that led to exception (the one that just executed) 
+             *      + 4 for ARM
+             *      + 2 for THUMB */
+            retPC = gba->cpu_state == CPU_STATE_ARM ? gba->REG[R15]-4 : gba->REG[R15]-2;
+            vector = 0x08;
+            switchMode(gba, CPU_MODE_SVC);
+            break;
+        }
+        case CPU_EXCEP_UNDEFINED: {
+            /* ''''''''''''' */
+            retPC = gba->cpu_state == CPU_STATE_ARM ? gba->REG[R15]-4 : gba->REG[R15]-2;
+            vector = 0x04;
+            switchMode(gba, CPU_MODE_UND);
+            break;
+        }
+
+        /* GBA memory does not issue faults, it returns open bus/garbage which means
+         * PABORT and DABORT will never naturally occur and its safe to ignore */
+        default: break;
+    }
+
+    CPSR_SetBit(gba, CPSR_IRQ_DIS);
+    gba->SPSR = CPSR;
+    /* Switches to ARM mode because bit 0 is 0 */
+    branchAndExchange(gba, vector);
+    gba->REG[R14] = retPC;
+}
+
+static void returnException(GBA* gba) {
+    /* When PC is written to with S bit set in privileged mode, exception return is
+     * triggered, CPSR <- SPSR */
+    if (gba->cpu_mode == CPU_MODE_SYSTEM || gba->cpu_mode == CPU_MODE_USER) return;
+
+    gba->CPSR = gba->SPSR;
+    
+    /* Do necessary mode and state switch */
+    switchMode(gba, gba->CPSR & 0x1F);
+    if (CPSR_GetBit(gba, CPSR_T)) {gba->cpu_state = CPU_STATE_THUMB;}
+}
+
+static void checkExceptions(GBA* gba) {
+    /* Called at the end of dispatch, check if any exceptions have been generated 
+     * and handle them accordingly, beginning from next execution */
+    for (int i=CPU_EXCEP_COUNT-1; i>=0; i--) {
+        uint8_t requested = (gba->exceptionState >> i) & 1;
+        if (requested) {
+            /* Skip IRQ and FIQ requests if they have been disabled in CPSR 
+             * They would be handled after the bits are cleared */
+            if (i == CPU_EXCEP_IRQ && CPSR_GetBit(gba, CPSR_IRQ_DIS)) continue;
+            if (i == CPU_EXCEP_FIQ && CPSR_GetBit(gba, CPSR_FIQ_DIS)) continue;
+
+            /* A suitable exception can be handled now */
+            triggerException(gba, i);
+            /* Clear exception request bit */
+            gba->exceptionState &= ~(1 << i);
+        }
+    }
+}
+
+/* ----------------------------------------------------------------- */
+
+
+
 void stepCPU(GBA* gba) {
 	/* CPU Pipeline has 3 stages happening simulataneously, Execute/Decode/Fetch
 	 *
@@ -1983,13 +2199,6 @@ void stepCPU(GBA* gba) {
 	 * C3 -> Execute ins1   Decode ins2   	Fetch ins3
 	 * C4 -> Execute ins2 	Decode ins3 	Fetch ins4
 	 * ...
-	 *
-	 * But we can merge the execute and decode stages, so essentially we do this
-	 *
-	 * C1 -> Execute/Decode   - 	Fetch 	ins1
-	 * C2 -> Execute/Decode   - 	Fetch   ins2
-	 * C3 -> Execute/Decode  ins1	Fetch	ins3
-	 * C4 -> Execute/Decode  ins2 	Fetch 	ins4
 	 *
 	 * Any instruction that modifies R15 causes a pipeline flush, causing it clear up
 	 * and start fetching again. However, we can optimize by not emulating the first 2 cpu steps where
@@ -2000,6 +2209,7 @@ void stepCPU(GBA* gba) {
 	 * The instructions flow in the queue once they are loaded in, independent of what happens at
 	 * the actual address. This means if the address of the next instruction is modified,
 	 * the instruction will still execute as it was prefetched in the queue */
+
 	if (gba->cpu_state == CPU_STATE_ARM) {
 #if defined(DEBUG_ENABLED) && defined(DEBUG_TRACE_STATE)
 		uint32_t opcode = readPipeline(gba);
@@ -2008,9 +2218,12 @@ void stepCPU(GBA* gba) {
 #else
 		dispatchARM(gba, readPipeline(gba));
 #endif
-		if (gba->skipFetch) {gba->skipFetch = false; return;}
+        /* Exceptions are checked for, and pipeline may be flushed and refilled before continuing */
+        checkExceptions(gba);
 
+		if (gba->skipFetch) {gba->skipFetch = false; return;}
 		insertPipeline(gba, readARMOpcode(gba));
+
 	} else {
 #if defined(DEBUG_ENABLED) && defined(DEBUG_TRACE_STATE)
 		uint16_t opcode = (uint16_t)readPipeline(gba);
@@ -2019,8 +2232,9 @@ void stepCPU(GBA* gba) {
 #else
 		dispatchTHUMB(gba, readPipeline(gba));
 #endif
-		if (gba->skipFetch) {gba->skipFetch = false; return;}
+        checkExceptions(gba);
 
+		if (gba->skipFetch) {gba->skipFetch = false; return;}
 		insertPipeline(gba, readTHUMBOpcode(gba));
 	}
 }

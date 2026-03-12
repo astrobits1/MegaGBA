@@ -3,6 +3,7 @@
 #ifndef gba_arm7tdmi_h
 #define gba_arm7tdmi_h
 
+#include <stdlib.h>
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -19,6 +20,15 @@ typedef enum {
 } CPU_MODE;
 
 typedef enum {
+    CPU_EXCEP_UNDEFINED = 0,                /* Undefined Instruction exception */
+    CPU_EXCEP_SWI,                          /* Software Interrupt */
+    CPU_EXCEP_IRQ,                          /* Interrupt Exception */
+    CPU_EXCEP_FIQ,                           /* Fast Interrupt Exception (Not triggered naturally) */
+
+    CPU_EXCEP_COUNT = 4
+} CPU_EXCEP;                                /* High number = higher priority */
+
+typedef enum {
 	CPU_STATE_ARM,	 			/* 32 bit ARM */
 	CPU_STATE_THUMB 			/* 16 bit THUMB */
 } CPU_STATE;
@@ -30,7 +40,7 @@ enum { 							/* CPSR bits */
 	FLG_V = 28,
 	CPSR_IRQ_DIS = 7,
 	CPSR_FIQ_DIS = 6,
-	CPSR_THUMB = 5
+	CPSR_T = 5
 };
 
 enum { 							/* Helpful register abbreviations */
@@ -51,4 +61,5 @@ enum { 							/* Helpful register abbreviations */
 
 void initialiseCPU(GBA* gba);
 void stepCPU(GBA* gba);
+
 #endif

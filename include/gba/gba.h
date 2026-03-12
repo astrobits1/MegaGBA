@@ -78,7 +78,8 @@ struct GBA {
 	bool skipFetch; 			/* Skip the pipeline fetch in the current pipeline cycle
 								   either because the pipeline was flushed or the fetch was already
 								   done internally during execution stage to emulate PC+12 */
-
+    /* Exceptions */
+    uint8_t exceptionState;     /* When exceptions are triggered, the corresponding bit is set high in here */
 	/* Main Regs */
 	uint32_t REG[16]; 			/* Main 16 registers */
 	uint32_t CPSR; 				/* Main CPSR Register */
@@ -117,9 +118,11 @@ struct GBA {
 	GamePak* gamepak; 					/* Cartridge containing allocated code and important info
 										   about the game */
 	bool run; 							/* Flag used to stop the emulator and check if its running */
-    unsigned long long frame;
 
 	/* Allocations */
+    uint8_t* biosROM;
+    size_t biosSize;
+
 	uint8_t* IWRAM;
 	uint8_t* EWRAM;
 	uint8_t* IO;
@@ -147,9 +150,9 @@ void busWrite(GBA* gba, uint32_t address, uint32_t data, uint8_t size);
 /* --------------- */
 
 void SDLEvents(GBA* gba);
-void startGBAEmulator(GamePak* gamepak);
+void startGBAEmulator(GamePak* gamepak, uint8_t* biosROM, size_t biosSize);
 
-void initialiseGBA(GBA* gba, GamePak* gamepak);
+void initialiseGBA(GBA* gba, GamePak* gamepak, uint8_t* biosROM, size_t biosSize);
 void freeGBA(GBA* gba);
 
 #endif
