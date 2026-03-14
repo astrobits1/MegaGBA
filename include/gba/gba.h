@@ -104,7 +104,8 @@ struct GBA {
 	void (*THUMB_LUT[256])(struct GBA* gba, uint16_t ins);		/* Lookup table with 8 bit indices
 																   for THUMB instructions */
 	/* ----------------- Renderer ---------------- */
-	PPU_VideoMode videoMode; 				// }
+	PPU_BGMode bgMode; 		        		// }
+    uint8_t frameSelect;                    // }
 	uint8_t BG0_Flag;						// }
 	uint8_t BG1_Flag;						// } Latched Values of DISPCNT at start of the scanline
 	uint8_t BG2_Flag; 						// }

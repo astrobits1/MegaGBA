@@ -105,9 +105,10 @@ void initialiseGBA(GBA* gba, GamePak* gamepak, uint8_t* biosBuffer, size_t biosS
 	gba->BG2_Flag = 0;
 	gba->BG3_Flag = 0;
 	gba->forcedBlank = 0;
+    gba->frameSelect = 0;
 	gba->ppuHState = PPU_HDRAW;
 	gba->ppuVState = PPU_VDRAW;
-	gba->videoMode = VMODE_0;
+	gba->bgMode = BGMODE_0;
 
 	/* Allocate memory for components */
 	uint8_t* IWRAM 		= (uint8_t*)malloc(0x8000);			// 32 KB

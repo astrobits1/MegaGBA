@@ -6,7 +6,7 @@ void latchDISPCNT(GBA* gba) {
 	uint16_t DISPCNT = readIO(gba, DISPCNT, WIDTH_16);
 
 	/* Note: Values 6 and 7 are prohibited and dont mean anything */
-	gba->videoMode = DISPCNT & 0b111;
+	gba->bgMode = DISPCNT & 0b111;
 	gba->forcedBlank = DISPCNT >> 7 & 1;
 	gba->BG0_Flag = DISPCNT >> 8 & 1;
 	gba->BG1_Flag = DISPCNT >> 9 & 1;
@@ -19,35 +19,40 @@ static inline uint8_t toRGB888(uint8_t rgb555) {
     return (rgb555 << 3) | (rgb555 >> 2);
 }
 
+static void setSDLPaletteColour(GBA* gba, uint16_t rgb555) {
+    /* Helper function to set SDL draw colour to rgb555 palette value */
+	uint8_t r = rgb555 & 0x1F;
+	uint8_t g = rgb555 >> 5 & 0x1F;
+	uint8_t b = rgb555 >> 10 & 0x1F;
+
+	SDL_SetRenderDrawColor(gba->SDL_Renderer, toRGB888(r), toRGB888(g), toRGB888(b), 255);
+}
+
+/* ---------------------------------------------------------------------- */
+
+
 static void renderWhiteScanline(GBA* gba) {
 	SDL_SetRenderDrawColor(gba->SDL_Renderer, 255, 255, 255, 255);
 	SDL_RenderDrawLine(gba->SDL_Renderer, 0, gba->IO[VCOUNT], 239, gba->IO[VCOUNT]);
 }
 
-static void renderMode3Scanline(GBA* gba) {
+static void renderBGMode3Scanline(GBA* gba) {
 	/* Mode 3 is a simple bitmap mode with only 1 frame/screen and the pixel data 
 	 * along with colors are stored directly in VRAM from 0x06000000-0x06012BFF 
 	 * Each pixel occupies 2 bytes of data (16 bit color), thus first 480 bytes define 
 	 * the first scanline, and so on for every scanline */
 	uint8_t y = gba->IO[VCOUNT];
 
-    printf("Y: %d |", y);
 	for (int x = 0; x < 240; x++) { 			/* 240 Pixels */
 		uint32_t address = 480*y+2*x;
 		uint16_t rgb = gba->VRAM[address] | (gba->VRAM[address+1] << 8);
-		uint8_t r = rgb & 0x1F;
-		uint8_t g = rgb >> 5 & 0x1F;
-		uint8_t b = rgb >> 10 & 0x1F;
 
-        printf("%d %d %d |", toRGB888(r), toRGB888(g), toRGB888(b));
-		SDL_SetRenderDrawColor(gba->SDL_Renderer, toRGB888(r), toRGB888(g), toRGB888(b), 255);
+        setSDLPaletteColour(gba, rgb);
 		SDL_RenderDrawPoint(gba->SDL_Renderer, x, y);
 	}
-
-    printf("\n");
 }
 
-static void renderMode4Scanline(GBA* gba) {
+static void renderBGMode4Scanline(GBA* gba) {
 	/* Mode 4 is a bitmap mode similar to mode 3, with the exception of having 2 frames
 	 * 
 	 * Display frame is selected using bit 4 of DISPCNT
@@ -57,8 +62,7 @@ static void renderMode4Scanline(GBA* gba) {
 	 * The byte represents the BG Palette RAM index, color 0 being transparent 
 	 * Note: Transparent color is the color 0 of BG Palette, currently sprites are not supported */
 
-	uint8_t frame = gba->IO[DISPCNT] >> 4 & 1;
-	uint32_t base = frame ? 0xA000 : 0x0000;
+	uint32_t base = gba->frameSelect ? 0xA000 : 0x0000;
 	uint8_t y = gba->IO[VCOUNT];
 
 	for (int x = 0; x < 240; x++) {
@@ -66,15 +70,42 @@ static void renderMode4Scanline(GBA* gba) {
 		uint8_t index = gba->VRAM[base + 240*y + x];
 		uint16_t rgb = gba->PaletteRAM[2*index] | (gba->PaletteRAM[2*index+1] << 8);
 
-        //if (rgb != 0xFFFF) printf("c %x\n", rgb);
-		uint8_t r = rgb & 0x1F;
-		uint8_t g = rgb >> 5 & 0x1F;
-		uint8_t b = rgb >> 10 & 0x1F;
-
-		SDL_SetRenderDrawColor(gba->SDL_Renderer, toRGB888(r), toRGB888(g), toRGB888(b), 255);
-		SDL_RenderDrawPoint(gba->SDL_Renderer, x, y);
+        setSDLPaletteColour(gba, rgb);
+        SDL_RenderDrawPoint(gba->SDL_Renderer, x, y);
 	}
 }
+
+static void renderBGMode5Scanline(GBA* gba) {
+    /* 2 byte per colour direct bitmap just like mode 3,
+     * but display size is reduced to 160x128. This allows us to have 2 frames
+     * that are swapable like mode 4. */
+	uint32_t base = gba->frameSelect ? 0xA000 : 0x0000;
+	uint8_t y = gba->IO[VCOUNT];
+
+    if (y < 128) {
+	    for (int x = 0; x < 160; x++) {
+		    /* BG Palette RAM */
+            uint32_t address = 320*y+2*x;
+            uint16_t rgb = gba->VRAM[address] | (gba->VRAM[address+1] << 8);	
+
+		   
+            setSDLPaletteColour(gba, rgb);
+		    SDL_RenderDrawPoint(gba->SDL_Renderer, x, y);
+	    }
+    }
+
+    /* For the background, use the first colour entry in the palette 
+     * (This is not the exact behaviour, which has to do with affine and this 
+     * part is subject to change) */
+
+    uint16_t rgb = gba->PaletteRAM[0] | (gba->PaletteRAM[1] << 8);
+
+    setSDLPaletteColour(gba, rgb);
+	SDL_RenderDrawLine(gba->SDL_Renderer, y>=128 ? 0 : 160 , gba->IO[VCOUNT], 239, gba->IO[VCOUNT]);
+}
+
+/* ------------------------------------------------------------------------------- */
+
 
 void stepPPU(GBA* gba) {
 	/* Called at the end of every HDRAW and HBLANK to synchronize
@@ -101,11 +132,11 @@ void stepPPU(GBA* gba) {
 				if (gba->forcedBlank) {
 					renderWhiteScanline(gba);
 				} else {
-					switch (gba->videoMode) {
-						case VMODE_3: {
+					switch (gba->bgMode) {
+						case BGMODE_3: {
 							/* Video/BG mode 3 -> Bitmap */
 							if (gba->BG2_Flag) {
-								renderMode3Scanline(gba);
+								renderBGMode3Scanline(gba);
 							} else {
 								/* BG2 not enabled, render white scanline */
 								renderWhiteScanline(gba);
@@ -113,11 +144,16 @@ void stepPPU(GBA* gba) {
 							break;
 						}
 
-						case VMODE_4: {
-							if (gba->BG2_Flag) renderMode4Scanline(gba);
+						case BGMODE_4: {
+							if (gba->BG2_Flag) renderBGMode4Scanline(gba);
 							else renderWhiteScanline(gba);
 							break;
 						}
+                        case BGMODE_5: {
+                            if (gba->BG2_Flag) renderBGMode5Scanline(gba);
+                            else renderWhiteScanline(gba);
+                            break;
+                        }
 
 						default: {
 							//printf("[WARNING] Invalid Video Mode %d, rendering white line\n", gba->videoMode);

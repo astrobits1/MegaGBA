@@ -4,13 +4,13 @@
 typedef struct GBA GBA;
 
 typedef enum {
-	VMODE_0, 				// } -------------------
-	VMODE_1, 				// }    Tilemap Modes
-	VMODE_2,				// } -------------------
-	VMODE_3, 				// } -------------------
-	VMODE_4, 				// } 	Bitmap Modes
-	VMODE_6 				// } -------------------
-} PPU_VideoMode;
+	BGMODE_0, 				// } -------------------
+	BGMODE_1, 				// }    Tilemap Modes
+	BGMODE_2,				// } -------------------
+	BGMODE_3, 				// } -------------------
+	BGMODE_4, 				// } 	Bitmap Modes
+	BGMODE_5 				// } -------------------
+} PPU_BGMode;
 
 typedef enum {
 	PPU_HDRAW, 				// } Horizontal State
