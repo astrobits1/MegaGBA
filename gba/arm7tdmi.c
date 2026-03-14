@@ -135,7 +135,7 @@ static uint8_t getVFlag(GBA* gba, uint32_t OP1, uint32_t OP2, uint32_t result) {
 	return 0;
 }
 
-static uint32_t twosComplementOffset(uint32_t base, uint32_t offset, uint8_t signBit) {
+uint32_t twosComplementOffset(uint32_t base, uint32_t offset, uint8_t signBit) {
     /* Helper function to perform Twos complement signed value offset calculation
      * without causing sign miscalculations. Useful for branching */
 
@@ -143,7 +143,7 @@ static uint32_t twosComplementOffset(uint32_t base, uint32_t offset, uint8_t sig
 
 	if (sign) {
 		// Convert 2s complement to an absolute positive integer (since we already know sign)
-		offset = (UINT32_MAX - (offset | 0xFE000000)) + 1;
+		offset = (~offset & ((1 << (signBit+1))-1))+1;
 		// Subtract absolute value
 		base -= offset;
 	} else {
@@ -560,7 +560,6 @@ static void MUL_MLA(struct GBA* gba, uint32_t ins) {
 	uint8_t Rs = ins >> 8 & 0xF;
 	uint8_t Rm = ins & 0xF;
 
-	if (Rd == Rm) return;
 	if ((Rd+1|Rn+1|Rs+1|Rm+1) >> 4) return; 		/* R15 is not allowed as operand or dest*/
 
 	uint32_t result;
@@ -679,11 +678,17 @@ static void LDR_STR(struct GBA* gba, uint32_t ins) {
 			gba->REG[Rd] = word;
 		}
 
-        if (Rd == R15) flushRefillPipeline(gba);
+        if (Rd == R15) {
+            /* Preserve world alignment/half word alignment */
+            if (gba->cpu_state == CPU_STATE_ARM) gba->REG[R15] &= ~0b11;
+            else gba->REG[R15] &= ~1;
+
+            flushRefillPipeline(gba);
+        }
 	} else {
 		/* STR */
 		uint32_t source = gba->REG[Rd];
-		if (Rd == R15) {source += 4;} 		/* PC+12 */
+		if (Rd == R15) {source += gba->cpu_state == CPU_STATE_ARM ? 4 : 2;} 		/* PC+12 */
 		if (B) {
 			/* STR BYTE */
 			busWrite(gba, base, source & 0xFF, WIDTH_8);
@@ -755,7 +760,8 @@ static void LDR_STR_H_SB_SH(struct GBA* gba, uint32_t ins) {
 			} else {
 				/* STRH - Bit 0 is cleared for halfword alignment */ 
 				/* PC+12 if Rd == R15 */
-				if (Rd == R15) busWrite(gba, base & ~1, (gba->REG[Rd] + 4) & 0xFFFF, WIDTH_16);
+                uint8_t pcOffset = gba->cpu_state == CPU_STATE_ARM ? 4 : 2;
+				if (Rd == R15) busWrite(gba, base & ~1, (gba->REG[Rd] + pcOffset) & 0xFFFF, WIDTH_16);
 				else busWrite(gba, base & ~1, gba->REG[Rd] & 0xFFFF, WIDTH_16);
 
                 WRITEBACK(); 
@@ -816,6 +822,7 @@ static void LDM_STM(struct GBA* gba, uint32_t ins) {
 	uint8_t Rn = ins >> 16 & 0xF;
 	uint16_t regList = ins & 0xFFFF;
 	uint32_t base = gba->REG[Rn];
+    uint32_t baseInitial = base;
 
 	if (Rn == R15) return;
 	if (S && (gba->cpu_mode == CPU_MODE_USER || gba->cpu_mode == CPU_MODE_SYSTEM)) {
@@ -826,20 +833,21 @@ static void LDM_STM(struct GBA* gba, uint32_t ins) {
 	/* Find out number of registers involved and also store them in an array */
 	uint8_t REG_COUNT = 0;
 	uint8_t REGS[16];
+
 	memset(&REGS, 0, 16);
 
 	for (int i = 0; i < 16; i++) {
-		if (regList >> i & 1) {
-			REGS[REG_COUNT] = i;
+		if (regList >> i & 1) { 
+            REGS[REG_COUNT] = i;
 			REG_COUNT++;
-		}
-	}
+	    }
+    }
 
 	/* Check the reglist from lowest to highest, and transfer the ones which are enabled */
 	if (L) {
 		/* LDM */
-		bool abortWriteBack = false;
 		bool UBT = S && !(regList >> 15 & 1); 					// User Bank Transfer
+        bool abortWriteBack = false;
 
 		for (int i = 0; i < REG_COUNT; i++) {
 			uint8_t REG = REGS[i];
@@ -881,11 +889,13 @@ static void LDM_STM(struct GBA* gba, uint32_t ins) {
 			if (REG == R15) {
 				if (S && gba->cpu_mode != CPU_MODE_USER && gba->cpu_mode != CPU_MODE_SYSTEM) {
 					/* CPSR = SPSR_mode */
-					gba->CPSR = gba->SPSR;
+                    returnException(gba);
+                }
 
-					/* Update mode */
-					switchMode(gba, gba->CPSR & 0x1F);
-				}
+                /* Preserve world/half word alignment */
+                if (gba->cpu_state == CPU_STATE_ARM) gba->REG[R15] &= ~0b11;
+                else gba->REG[R15] &= ~1;
+
 				flushRefillPipeline(gba);
 			}
 		}
@@ -918,18 +928,21 @@ static void LDM_STM(struct GBA* gba, uint32_t ins) {
 				}
 			}
 
-			if (REG == R15) data += 4; 								// PC+12
+			if (REG == R15) data += gba->cpu_state == CPU_STATE_ARM ? 4 : 2; 			// PC+12 
+
+            /* If Rn is being transferred in STM and is not a banked register, and
+			 * is the first in order, the value stored will be the initial Rn value (or base value),
+			 * otherwise the value stored becomes the updated address (writeback value)
+             * that would be the final value */
+
+			if (!transferringBanked && REG == Rn && i != 0) {
+                data = U ? baseInitial+REG_COUNT*4 : baseInitial-REG_COUNT*4;
+            }
 
 			if (U) {
 				/* Add offset */
 				uint32_t address = P ? base + 4 : base; 			// Pre/Post
-				address &= ~3;
-
-				/* If Rn is being transferred in STM and is not a banked register, and
-				 * is the first in order, the value stored will be the initial Rn value,
-				 * otherwise the value stored becomes the updated address */
-
-				if (!transferringBanked && REG == Rn && i != 0) data = address;
+				address &= ~3;	
 
 				busWrite(gba, address, data, WIDTH_32);
 				base += 4;
@@ -939,17 +952,44 @@ static void LDM_STM(struct GBA* gba, uint32_t ins) {
 				uint32_t address = reference + i*4;
 				address &= ~3;		// Pre/Post
 
-				if (!transferringBanked && REG == Rn && i != 0) data = address;
-
 				busWrite(gba, address, data, WIDTH_32);
 				base -= 4;
 			}
 		}
 
-
-		/* STM Write back at the end if W bit is set and User Bank Transfer is not being used */
-		if (!UBT && W) gba->REG[Rn] = base;
+        /* Writeback at the end of STM if required */
+        if (!UBT && W) gba->REG[Rn] = base;
 	}
+
+    /* ARMv4 weird behaviour for empty reglist 
+     * Is R15 stored throughout base to base +- 0x40? for STM?
+     * Yes, also exactly following pre and post behaviour for increment
+     * 
+     * R15 also seems to be loaded to [base] for LDM
+     */
+   
+    if (REG_COUNT == 0) {
+        /* Load/Store R15 from/to base address */
+        if (L) {
+            gba->REG[R15] = busRead(gba, base, WIDTH_32);
+            flushRefillPipeline(gba);
+        } else {
+            /* PC+12 seems to be read here according to arm.gba */
+            uint8_t pcOffset = gba->cpu_state == CPU_STATE_ARM ? 4 : 2;
+            for (int i=0; i<16; i++) {
+                uint32_t address;
+                if (P) address = U ? base+4*(i+1) : base-4*(i+1);
+                else address = U ? base+4*i : base-4*i;
+                busWrite(gba, address, gba->REG[R15]+pcOffset, WIDTH_32);
+            }
+        }
+
+        /* When writeback is enabled or forced, we do +-0x40 on the base register
+         * as if the reglist was full and all registers were iterated over */
+        if (!P || W) {
+            gba->REG[Rn] += (U ? 0x40 : -0x40);
+        }
+    }
 }
 
 static void SWP(struct GBA* gba, uint32_t ins) {
@@ -975,10 +1015,11 @@ static void SWP(struct GBA* gba, uint32_t ins) {
 
 		/* Rotate Word for unaligned address just like LDR */
 		uint8_t alignOffset = base & 3; 			/* Can be 0-3 */
-		uint32_t trailing = old >> 8 * (4 - alignOffset);
+        uint32_t shifted = old & ((1 << (alignOffset * 8)) - 1);
 
-		old <<= alignOffset * 8;
-		old |= trailing;
+        old >>= alignOffset * 8;
+        old |= shifted << (32 - (alignOffset * 8));
+
 		gba->REG[Rd] = old;
 	}
 }
@@ -1013,13 +1054,17 @@ static void LSL_LSR_ASR(struct GBA* gba, uint16_t ins) {
 
 	if (opcode == 3) return; 				// Invalid Encoding
 
+    if ((opcode == 1 || opcode == 2) && offset == 0) {
+        /* LSR/ASR #0 special case */
+        offset = 32;
+    }
 	uint32_t shifted = barrelShifter(gba, opcode, data, offset, &carry);
 	gba->REG[Rd] = shifted;
 
 	/* Set CPSR */
 	CPSR_ModifyBit(gba, FLG_C, carry);
-	CPSR_ModifyBit(gba, FLG_N, data >> 31);
-	CPSR_ModifyBit(gba, FLG_Z, data == 0);
+	CPSR_ModifyBit(gba, FLG_N, shifted >> 31);
+	CPSR_ModifyBit(gba, FLG_Z, shifted == 0);
 }
 
 static void ADD_SUB(struct GBA* gba, uint16_t ins) {
@@ -1060,7 +1105,7 @@ static void ADD_SUB(struct GBA* gba, uint16_t ins) {
 static void MOV_CMP_ADD_SUB_Imm(struct GBA* gba, uint16_t ins) {
 	uint8_t opcode = ins >> 11 & 0b11;
 	uint8_t Rd = ins >> 8 & 0b111;
-	uint8_t offset = ins & 0xFF;
+	uint32_t offset = ins & 0xFF;
 
 	uint32_t result = 0;
 	uint32_t OP1 = gba->REG[Rd];
@@ -1218,11 +1263,12 @@ static void ALU(struct GBA* gba, uint16_t ins) {
 		}
 		case 9: {
 			/* NEG - Same as RSB Rd, Rs, #0 or Rd = -Rs */
-			OP2 = 0;
-			OP1 = ~OP1;
-			result = OP2 + OP1 + 1;
+			OP2 = ~OP2;
+            OP1 = 0;
 
-			carry = ((uint64_t)OP1 + (uint64_t)OP2 + 1) >> 32;
+			result = OP2 + 1;
+
+			carry = ((uint64_t)OP2 + 1) >> 32;
 			setV = true;
 			break;
 		}
@@ -1318,7 +1364,11 @@ static void HIREG_OPS_BX(struct GBA* gba, uint16_t ins) {
 		}
 	}
 
-	if (Rd == R15 && !testInstruction) flushRefillPipeline(gba);
+	if (Rd == R15 && !testInstruction) {
+        /* PC should always be halfword aligned */
+        gba->REG[R15] &= ~1;
+        flushRefillPipeline(gba);
+    }
 }
 
 static void PC_Relative_Load(struct GBA* gba, uint16_t ins) {
@@ -1335,6 +1385,7 @@ static void PC_Relative_Load(struct GBA* gba, uint16_t ins) {
 }
 
 static void LDR_STR_REG_OFFSET(struct GBA* gba, uint16_t ins) {
+    /* Transcode to equivalent ARM instruction */
     uint8_t Rd = ins & 0b111;
     uint8_t Rb = (ins >> 3) & 0b111;
     uint8_t Ro = (ins >> 6) & 0b111;
@@ -1342,28 +1393,15 @@ static void LDR_STR_REG_OFFSET(struct GBA* gba, uint16_t ins) {
     uint8_t B = (ins >> 10) & 1;
     uint8_t L = (ins >> 11) & 1;
 
-    if (L) {
-        /* LDR/LDRB */
-        uint32_t source = gba->REG[Rb] + gba->REG[Ro];
+    uint32_t arm = 0b111001111000 << 20;
+    
+    if (L) arm |= 1 << 20;
+    if (B) arm |= 1 << 22;
 
-        if (B) {
-            /* LDRB - Byte loading */
-            gba->REG[Rd] = busRead(gba, source, WIDTH_8);
-        } else {
-            /* LDR - Word loading */
-            gba->REG[Rd] = busRead(gba, source, WIDTH_32);
-        }
-    } else {
-        /* STR/STRB */
-        uint32_t target = gba->REG[Rb] + gba->REG[Ro];
+    arm |= (Rb << 16) | (Rd << 12);
+    arm |= Ro;
 
-        if (B) {
-            /* STRB - Byte storing */
-            busWrite(gba, target, gba->REG[Rd], WIDTH_8);
-        } else {
-            busWrite(gba, target, gba->REG[Rd], WIDTH_32); 
-        }
-    }
+    LDR_STR(gba, arm);
 }
 
 static void LDR_STR_H_SB_SH_THUMB(struct GBA* gba, uint16_t ins) {
@@ -1374,41 +1412,21 @@ static void LDR_STR_H_SB_SH_THUMB(struct GBA* gba, uint16_t ins) {
     uint8_t S = (ins >> 10) & 1;
     uint8_t H = (ins >> 11) & 1;
 
-    uint32_t address = gba->REG[Rb] + gba->REG[Ro];
 
-    if (!S) {
-        /* No sign extension */
-        if (H) {
-            /* LDRH - Load halfword */
-            gba->REG[Rd] = (uint32_t)busRead(gba, address, WIDTH_16);
-        } else {
-            /* STRH - Store halfword */
-            busWrite(gba, address, gba->REG[Rd] & 0xFFFF, WIDTH_16);
-        }
+    uint32_t arm = 0b111000011000 << 20;
+    arm |= (Rb << 16) | (Rd << 12);
+    arm |= 0b1001 << 4;
+    arm |= Ro;
+
+    if (S) {
+        arm |= (1 << 6);
+        if (H) arm |= (1 << 5);
     } else {
-        /* Sign extension loading for halfword/byte */
-        if (H) {
-            /* LDSH - Load sign extended halfword */
-            uint16_t hw = busRead(gba, address, WIDTH_16);
-           
-            /* Set bit 31-16 of Rd to bit 15 of half word, copy rest of halfword as is to bits 15-0 */
-            if (hw >> 15) {
-                gba->REG[Rd] = 0xFFFF0000 | hw;
-            } else {
-                gba->REG[Rd] = (uint32_t)hw;
-            }
-        } else {
-            /* LDSB - Load sign extended byte */
-            uint8_t byte = busRead(gba, address, WIDTH_8);
-
-            /* Set bit 31-8 to bit 7 of byte, copy rest of byte as it to bits 7-0 */
-            if (byte >> 7) {
-                gba->REG[Rd] = 0xFFFFFF00 | byte;
-            } else {
-                gba->REG[Rd] = (uint32_t)byte;
-            }
-        }
+        arm |= (1 << 5);
+        if (H) arm |= (1 << 20);
     }
+
+    LDR_STR_H_SB_SH(gba, arm);
 }
 
 static void LDR_STR_Imm_THUMB(struct GBA* gba, uint16_t ins) {
@@ -1419,32 +1437,20 @@ static void LDR_STR_Imm_THUMB(struct GBA* gba, uint16_t ins) {
     uint8_t L = (ins >> 11) & 1;
     uint8_t B = (ins >> 12) & 1;
 
-    if (L) {
-        /* LDR/LDRB */
-        if (B) {
-            /* LDRB - Load byte from address with immediate offset 
-             * Note: Is the lower byte written and everything else set to 0? Or is the upper region preserved */
-            uint32_t source = gba->REG[Rb] + offset5;
-            gba->REG[Rd] = busRead(gba, source, WIDTH_8);
-        } else {
-            /* LDR - Load word from address with immediate offset 
-             * offset5 has to be extended to 7 bit with first 2 bits as 0, since its word aligned */
-            uint32_t source = gba->REG[Rb] + (offset5 << 2);
-            gba->REG[Rd] = busRead(gba, source, WIDTH_32);
-        }
-    } else {
-        /* STR/STRB */
-        if (B) {
-            /* STRB - Store byte at address with immediate offset */
-            uint32_t target = gba->REG[Rb] + offset5;
-            busWrite(gba, target, gba->REG[Rd] & 0xFF, WIDTH_8);
-        } else {
-            /* STR - Store word at address with immediate offset */
-            uint32_t target = gba->REG[Rb] + (offset5 << 2);
-            busWrite(gba, target, gba->REG[Rd], WIDTH_32);
-        }
 
+    uint32_t arm = 0b111001011000 << 20;
+    arm |= (Rb << 16) | (Rd << 12);
+
+    if (B) {
+        arm |= offset5;
+        arm |= 1 << 22;
+    } else {
+        arm |= offset5 << 2;
     }
+
+    if (L) arm |= 1 << 20;
+
+    LDR_STR(gba, arm);
 }
 
 static void LDR_STR_HW_THUMB(struct GBA* gba, uint16_t ins) {
@@ -1457,34 +1463,37 @@ static void LDR_STR_HW_THUMB(struct GBA* gba, uint16_t ins) {
 
     uint8_t L = (ins >> 11) & 1;
 
-    /* Offset is converted to 6 bit by shifting, as its halfword aligned */
-    uint32_t address = gba->REG[Rb] + (offset5 << 1);
+    uint32_t arm = 0b111000011100 << 20;
 
-    if (L) {
-        /* LDRH */
-        gba->REG[Rd] = (uint32_t)busRead(gba, address, WIDTH_16);
-    } else {
-        /* STRH */
-        busWrite(gba, address, gba->REG[Rd] & 0xFFFF, WIDTH_16);
-    }
+    if (L) arm |= 1 << 20;
+    arm |= 0b1011 << 4;
+
+    arm |= (Rb << 16) | (Rd << 12);
+
+    uint8_t high = ((offset5 << 1) & 0xF0) >> 4;
+    uint8_t low = (offset5 << 1) & 0x0F;
+
+    arm |= low;
+    arm |= high << 8;
+
+    LDR_STR_H_SB_SH(gba, arm);
 }
 
 static void LDR_STR_SP_Relative_THUMB(struct GBA* gba, uint16_t ins) {
     /* Load/Store words from an to memory, using 10 bit offset and SP register to address */
-    uint8_t offset8 = ins & 0xFF;
+    uint32_t offset8 = ins & 0xFF;
     uint8_t Rd = (ins >> 8) & 0b111;
 
     uint8_t L = (ins >> 11) & 1;
 
-    /* Offset is converted to 10 bit by shifting, its word aligned */
-    uint32_t address = gba->REG[R13] + (offset8 << 2);
-    if (L) {
-        /* LDR */
-        gba->REG[Rd] = busRead(gba, address, WIDTH_32);
-    } else {
-        /* STR */
-        busWrite(gba, address, gba->REG[Rd], WIDTH_32);
-    }
+    uint32_t arm = 0b111001011000 << 20;
+
+    arm |= offset8 << 2;
+    arm |= (R13 << 16) | (Rd << 12);
+
+    if (L) arm |= 1 << 20;
+
+    LDR_STR(gba, arm);
 }
 
 static void LOAD_ADDRESS_THUMB(struct GBA* gba, uint16_t ins) {
@@ -1498,7 +1507,7 @@ static void LOAD_ADDRESS_THUMB(struct GBA* gba, uint16_t ins) {
     if (SP) {
         /* Read from SP */
         uint32_t address = gba->REG[R13] + (offset8 << 2);
-        gba->REG[Rd] = busRead(gba, address, WIDTH_32);
+        gba->REG[Rd] = address;
     } else {
         /* Read from PC 
          * Bit 1 of PC is forced to 0 */
@@ -1526,83 +1535,61 @@ static void PUSH_POP_REGS(struct GBA* gba, uint16_t ins) {
      *
      *
      * These work the same as STMDB and LDMIA with writeback
+     * so the best option here is to transcode this into its equivalent ARM instruction
+     * and execute. 
      */
     uint8_t RList = ins & 0xFF;
     uint8_t R = (ins >> 8) & 1;
     uint8_t L = (ins >> 11) & 1;
 
-    uint32_t base = gba->REG[R13];
+
+    uint32_t arm = 0b111010000010 << 20;
+    arm |= L << 20;
 
     if (L) {
-        /* Load/POP - LDMIA */ 
-        for (int i=0; i<8; i++) {
-            uint8_t flag = (RList >> i) & 1;
-            if (flag) {
-                gba->REG[i] = busRead(gba, base, WIDTH_32);
-                base += 4;
-            }
-        }
-
-        if (R) {
-            /* Pop into PC */
-            gba->REG[R15] = busRead(gba, base, WIDTH_32);
-            base += 4;
-
-            flushRefillPipeline(gba);
-        }
-
+        /* Increase After P = 0 U = 1 */
+        arm |= 1 << 23;
     } else {
-        /* Store/PUSH - STMDB */
-        for (int i=0; i<8; i++) {
-            uint8_t flag = (RList >> i) & 1;
-            if (flag) {
-                base -= 4;
-                busWrite(gba, base, gba->REG[i], WIDTH_32);
-            }
-        }
-
-        if (R) {
-            /* Store LR (R14) */
-            base -= 4;
-            busWrite(gba, base, gba->REG[R14], WIDTH_32);
-        }
+        /* Decrease Before P = 1 U = 0*/
+        arm |= 1 << 24;
     }
 
-    /* Writeback */
-    gba->REG[R13] = base;
+    /* Add base register (R13 */
+    arm |= 0xD << 16;
+    /* Add Rlist */
+    arm |= RList;
+
+    /* Put R15/R14 on Rlist if needed */
+    if (R) {
+        if (L) arm |= 1 << 15;
+        else arm |= 1 << 14; 
+    }
+
+    /* Call our ARM implementation with transcoded opcode */
+    LDM_STM(gba, arm);
 }
 
 static void MULTIPLE_LOAD_STORE(struct GBA* gba, uint16_t ins) {
-    /* LMDIA Rb!, RList / STMIA Rb!, RList */
+    /* LMDIA Rb!, {RList} / STMIA Rb!, {RList}
+     *
+     * Easiest way is to just transcode to ARM LDM/STM equivalent and it automatically 
+     * handles all edge cases */
 
     uint8_t RList = ins & 0xFF;
     uint8_t Rb = (ins >> 8) & 0b111;
     uint8_t L = (ins >> 11) & 1;
 
-    uint32_t base = gba->REG[Rb];
+    uint32_t arm = 0b111010001010 << 20;
+    arm |= L << 20;
 
-    if (L) {
-        /* Load/POP - LDMIA */
-        for (int i=0; i<8; i++) {
-            uint8_t flag = (RList >> i) & 1;
-            if (flag) {
-                gba->REG[i] = busRead(gba, base, WIDTH_32);
-                base += 4;
-            }
-        }
-    } else {
-        /* Store/PUSH - STMIA*/
-        for (int i=0; i<8; i++) {
-            uint8_t flag = (RList >> i) & 1;
-            if (flag) {
-                busWrite(gba, base, gba->REG[i], WIDTH_32);
-                base += 4;
-            }
-        }
-    }
+    /* Add base register  */
+    arm |= Rb << 16;
+    /* Add Rlist */
+    arm |= RList;
 
-    /* Writeback */
-    gba->REG[Rb] = base;
+    /* Call our arm implementation with transcoded opcode */
+    LDM_STM(gba, arm);
+
 }
 
 static void CONDITIONAL_BRANCH(struct GBA* gba, uint16_t ins) {
@@ -1635,7 +1622,7 @@ static void LONG_BRANCH_W_LINK(struct GBA* gba, uint16_t ins) {
     uint32_t offset = ins & 0x7FF;
     uint8_t H = (ins >> 11) & 1;
 
-    if (H) {
+    if (!H) {
         /* Offset Low behaviour */
         gba->REG[R14] = gba->REG[R15] + (offset << 12);
     } else {
@@ -1644,9 +1631,13 @@ static void LONG_BRANCH_W_LINK(struct GBA* gba, uint16_t ins) {
          * Return value is set in LR, which is the address of the instruction following the final
          * BL. PC is also written here combining both halves */
         uint32_t ret = gba->REG[R15]-2;     /* PC is 2 instructions ahead, we want to point to 1 instruction ahead */
-        gba->REG[R14] += offset << 1;
-        gba->REG[R15] = twosComplementOffset(gba->REG[R15], gba->REG[R14], 22);
+
+        /* Rather than doing this part by part 2s complement addition, we just extract the previous
+         * offset and calculate full offset, then write value accordingly */
+        gba->REG[R15]=twosComplementOffset(gba->REG[R15]-2, gba->REG[R14]-(gba->REG[R15]-2)+(offset<<1), 22);
         gba->REG[R14] = ret | 1;
+
+        flushRefillPipeline(gba);
     }
 }
 
@@ -1658,7 +1649,6 @@ static void SWI_THUMB(struct GBA* gba, uint16_t ins) {
 
 static void Unimplemented_THUMB(struct GBA* gba, uint16_t ins) {
 	printf("Instruction: %04x is an unimplemented THUMB Instruction\n", ins);
-	DEBUG_SET_BREAKPOINT("");
 }
 
 /* ---------------------------------------------------- */

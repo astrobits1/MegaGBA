@@ -25,9 +25,46 @@ void SDLEvents(GBA* gba) {
     /* We listen for events like keystrokes and window closing */
     SDL_Event event;
 
+#define KEYINPUT_SET(b)     writeIO(gba, KEYINPUT, readIO(gba, KEYINPUT, WIDTH_16) | (1 << b), WIDTH_16)
+#define KEYINPUT_RESET(b)   writeIO(gba, KEYINPUT, readIO(gba, KEYINPUT, WIDTH_16) & ~(1 << b), WIDTH_16)
+
     while (SDL_PollEvent(&event)) {
-        if (event.type == SDL_QUIT || event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE) {
+        if (event.type == SDL_QUIT) {
             gba->run = false;
+        } else if (event.type == SDL_KEYDOWN && event.key.repeat == 0) {
+            /* Handle keydown by updating KEYINPUT */
+            switch (event.key.keysym.scancode) {
+                case SDL_SCANCODE_S: KEYINPUT_RESET(7); break;
+                case SDL_SCANCODE_W: KEYINPUT_RESET(6); break;
+                case SDL_SCANCODE_A: KEYINPUT_RESET(5); break;
+                case SDL_SCANCODE_D: KEYINPUT_RESET(4); break;
+
+                case SDL_SCANCODE_Z: KEYINPUT_RESET(0); break;
+                case SDL_SCANCODE_X: KEYINPUT_RESET(1); break;
+                case SDL_SCANCODE_RETURN: KEYINPUT_RESET(3); break;
+                case SDL_SCANCODE_TAB: KEYINPUT_RESET(2); break;
+                case SDL_SCANCODE_I: KEYINPUT_RESET(9); break;
+                case SDL_SCANCODE_O: KEYINPUT_RESET(8); break;
+
+                default: break;
+            }
+        } else if (event.type == SDL_KEYUP && event.key.repeat == 0) {
+            /* Handle keyup by updating KEYINPUT */
+            switch (event.key.keysym.scancode) {
+                case SDL_SCANCODE_S: KEYINPUT_SET(7); break;
+                case SDL_SCANCODE_W: KEYINPUT_SET(6); break;
+                case SDL_SCANCODE_A: KEYINPUT_SET(5); break;
+                case SDL_SCANCODE_D: KEYINPUT_SET(4); break;
+
+                case SDL_SCANCODE_Z: KEYINPUT_SET(0); break;
+                case SDL_SCANCODE_X: KEYINPUT_SET(1); break;
+                case SDL_SCANCODE_RETURN: KEYINPUT_SET(3); break;
+                case SDL_SCANCODE_TAB: KEYINPUT_SET(2); break;
+                case SDL_SCANCODE_I: KEYINPUT_SET(9); break;
+                case SDL_SCANCODE_O: KEYINPUT_SET(8); break;
+
+                default: break;
+            }
         }
     }
 }
@@ -40,6 +77,19 @@ void cleanSDL(GBA* gba) {
 	gba->SDL_Renderer = NULL;
 	gba->SDL_Window = NULL;
 }
+
+/* ----------------------------------------------------- */
+
+static void initialiseIO(GBA* gba) {
+    /* PPU */
+    /* DISCNT, DISPSTAT, VCOUNT, BGNCNT are all 0 */
+
+    /* Keypad */
+
+    /* KEYINPUT - Set all key states to released */
+    writeIO(gba, KEYINPUT, 0xFFFF, WIDTH_16);
+}
+
 
 /* ----------------------------------------------------- */
 
@@ -82,11 +132,18 @@ void initialiseGBA(GBA* gba, GamePak* gamepak, uint8_t* biosBuffer, size_t biosS
 	gba->VRAM 		= VRAM;
 	gba->OAM 		= OAM;
 
-	/* Initialise all IO memory to 0 */
-	memset(gba->IO, 0, 0x3FF);
+    /* Initialise all memory */
+    memset(gba->IWRAM, 0, 0x8000);
+    memset(gba->EWRAM, 0, 0x40000);
+    memset(gba->IO, 0, 0x3FF);
+    memset(gba->PaletteRAM, 0, 0x400);
+    memset(gba->VRAM, 0, 0x18000);
+    memset(gba->OAM, 0, 0x400);
 
 	/* Initialising functions */
 	initialiseCPU(gba);
+    initialiseIO(gba);
+
 	bool initSDL = initialiseSDL(gba);
 
 	if (!initSDL) {
@@ -171,19 +228,15 @@ static inline void littleEndian16Encode(uint8_t* ptr, uint16_t value) {
 }
 
 uint32_t busRead(GBA* gba, uint32_t address, uint8_t size) {
+    uint8_t* ptr = NULL;
+
 	/* We're reading a 32/16/8 bit value from the given address */
     if (address >= BIOS_ROM_16KB && address <= BIOS_ROM_16KB_END) {
         /* Read from BIOS ROM that may or may not be available */
         if (gba->biosROM == NULL) return 0;
         if (address > gba->biosSize-1) return 0;
 
-        uint8_t* ptr = &gba->biosROM[address];
-
-        switch (size) {
-			case WIDTH_32: return littleEndian32Decode(ptr);
-	    	case WIDTH_16: return littleEndian16Decode(ptr);
-			case WIDTH_8:  return *ptr;
-		}
+        ptr = &gba->biosROM[address];
     } else if (address >= EXT_ROM0_32MB && address <= EXT_ROM2_32MB_END) {
 		uint32_t relativeAddress;
 
@@ -204,99 +257,56 @@ uint32_t busRead(GBA* gba, uint32_t address, uint8_t size) {
 			return 0;
 		}
 
-		uint8_t* ptr = &gba->gamepak->allocated[relativeAddress];
-
-		switch (size) {
-			case WIDTH_32: return littleEndian32Decode(ptr);
-			case WIDTH_16: return littleEndian16Decode(ptr);
-			case WIDTH_8 : return *ptr;
-		}
+		ptr = &gba->gamepak->allocated[relativeAddress];
+		
 	} else if (address >= INT_WRAM_32KB && address <= INT_WRAM_32KB_END) {
 		/* Read from internal work RAM */
-		uint8_t* ptr = &gba->IWRAM[address - INT_WRAM_32KB];
-
-		switch (size) {
-			case WIDTH_32: return littleEndian32Decode(ptr);
-			case WIDTH_16: return littleEndian16Decode(ptr);
-			case WIDTH_8:  return *ptr;
-		}
+		ptr = &gba->IWRAM[address - INT_WRAM_32KB];
 	} else if (address >= EXT_WRAM_256KB && address <= EXT_WRAM_256KB_END) {
 		/* Read from external work RAM - waitstates apply */
-		uint8_t* ptr = &gba->EWRAM[address - EXT_WRAM_256KB];
-
-		switch (size) {
-			case WIDTH_32: return littleEndian32Decode(ptr);
-			case WIDTH_16: return littleEndian16Decode(ptr);
-			case WIDTH_8:  return *ptr;
-		}
+		ptr = &gba->EWRAM[address - EXT_WRAM_256KB];
 	} else if (address >= VRAM_96KB && address <= VRAM_96KB_END) {
 		/* Read from Video RAM */
-		uint8_t* ptr = &gba->VRAM[address - VRAM_96KB];
-
-		switch (size) {
-			case WIDTH_32: return littleEndian32Decode(ptr);
-			case WIDTH_16: return littleEndian16Decode(ptr);
-			case WIDTH_8:  return *ptr;
-		}
+		ptr = &gba->VRAM[address - VRAM_96KB];
 	} else if (address >= IO_REG_1KB && address <= IO_REG_1KB_END) {
 		/* Read from IO register */
-		uint8_t* ptr = &gba->IO[address - IO_REG_1KB];
-
-		switch (size) {
-			case WIDTH_32: return littleEndian32Decode(ptr);
-			case WIDTH_16: return littleEndian16Decode(ptr);
-			case WIDTH_8: return *ptr;
-		}
+		ptr = &gba->IO[address - IO_REG_1KB];
 	} else if (address >= PALETTE_RAM_1KB && address <= PALETTE_RAM_1KB_END) {
 		/* Read from Palette RAM */
-		uint8_t* ptr = &gba->PaletteRAM[address - PALETTE_RAM_1KB];
-
-		switch (size) {
-			case WIDTH_32: return littleEndian32Decode(ptr);
-			case WIDTH_16: return littleEndian16Decode(ptr);
-			case WIDTH_8:  return *ptr;
-		}
+		ptr = &gba->PaletteRAM[address - PALETTE_RAM_1KB];	
 	}
 
-	return 0;
+    if (ptr == NULL) return 0;
+
+    switch (size) {
+		case WIDTH_32: return littleEndian32Decode(ptr);
+		case WIDTH_16: return littleEndian16Decode(ptr);
+		case WIDTH_8 : return *ptr;
+        default: return 0;
+	}
 }
 
 void busWrite(GBA* gba, uint32_t address, uint32_t data, uint8_t size) {
+    uint8_t* ptr = NULL;
+
 	if (address >= INT_WRAM_32KB && address <= INT_WRAM_32KB_END) {
 		/* Write to internal workram with current size and little endian formatting */
-		uint8_t* ptr = &gba->IWRAM[address - INT_WRAM_32KB];
-
-		switch (size) {
-			case WIDTH_32: littleEndian32Encode(ptr, data); return;
-			case WIDTH_16: littleEndian16Encode(ptr, data); return;
-			case WIDTH_8:  *ptr = (uint8_t)data; return;
-		}
+		ptr = &gba->IWRAM[address - INT_WRAM_32KB];
 	} else if (address >= EXT_WRAM_256KB && address <= EXT_WRAM_256KB_END) {
-		uint8_t* ptr = &gba->EWRAM[address - EXT_WRAM_256KB];
-
-		switch (size) {
-			case WIDTH_32: littleEndian32Encode(ptr, data); return;
-			case WIDTH_16: littleEndian16Encode(ptr, data); return;
-			case WIDTH_8:  *ptr = (uint8_t)data; return;
-		}
+		ptr = &gba->EWRAM[address - EXT_WRAM_256KB];
 	} else if (address >= VRAM_96KB && address <= VRAM_96KB_END) {
-		uint8_t* ptr = &gba->VRAM[address - VRAM_96KB];
+		ptr = &gba->VRAM[address - VRAM_96KB];
 
 		/* VRAM only supports 16 and 32 bit writes, writing a byte to the addressed
 		 * halfword is going to mirror it to both upper and lower byte */
-		switch (size) {
-			case WIDTH_32: littleEndian32Encode(ptr, data); return;
-			case WIDTH_16: littleEndian16Encode(ptr, data); return;
-			case WIDTH_8:  {
-				/* Halfword aligned */
-				ptr = &gba->VRAM[(address & ~1) - VRAM_96KB];
-				ptr[0] = (uint8_t)data;
-				ptr[1] = (uint8_t)data;
-				return;
-			}
+		if (size == WIDTH_8) {
+			/* Halfword aligned */
+			ptr = &gba->VRAM[(address & ~1) - VRAM_96KB];
+            data = (data << 8) | data;
+            size = WIDTH_16;
 		}
 	} else if (address >= IO_REG_1KB && address <= IO_REG_1KB_END) {
-		uint8_t* ptr = &gba->IO[address - IO_REG_1KB];
+		ptr = &gba->IO[address - IO_REG_1KB];
 
 		/* Check for read-only registers, and prevent a write */
 		switch (address - IO_REG_1KB) {
@@ -310,28 +320,43 @@ void busWrite(GBA* gba, uint32_t address, uint32_t data, uint8_t size) {
 				break;
 			}
 		}
-
-		switch (size) {
-			case WIDTH_32: littleEndian32Encode(ptr, data);
-			case WIDTH_16: littleEndian16Encode(ptr, data);
-			case WIDTH_8: *ptr = data;
-		}
 	} else if (address >= PALETTE_RAM_1KB && address <= PALETTE_RAM_1KB_END) {
-		uint8_t* ptr = &gba->PaletteRAM[address - PALETTE_RAM_1KB];
+		ptr = &gba->PaletteRAM[address - PALETTE_RAM_1KB];
 
 		/* Palette RAM only supports 16 and 32 bit writes, writing a byte to the addressed
 		 * halfword is going to mirror it to both upper and lower byte */
-		switch (size) {
-			case WIDTH_32: littleEndian32Encode(ptr, data); return;
-			case WIDTH_16: littleEndian16Encode(ptr, data); return;
-			case WIDTH_8:  {
-				/* Halfword aligned */
-				ptr = &gba->PaletteRAM[(address & ~1) - PALETTE_RAM_1KB];
-				ptr[0] = (uint8_t)data;
-				ptr[1] = (uint8_t)data;
-				return;
-			}
+		if (size == WIDTH_8) {
+			/* Halfword aligned */
+			ptr = &gba->PaletteRAM[(address & ~1) - PALETTE_RAM_1KB];
+            data = (data << 8) | data;
+            size = WIDTH_16;
 		}
+	}
+
+    if (ptr == NULL) return;
+
+    switch (size) {
+		case WIDTH_32: {
+#if defined(DEBUG_ENABLED) && defined(DEBUG_LOG_MEM)
+            printf("Written (W) %08x to %08x\n", data, address);
+#endif
+            littleEndian32Encode(ptr, data); 
+            return;
+        }
+		case WIDTH_16: {
+#if defined(DEBUG_ENABLED) && defined(DEBUG_LOG_MEM)
+            printf("Written (HW) %04x to %08x\n", data, address);
+#endif
+            littleEndian16Encode(ptr, data); 
+            return;
+        }
+		case WIDTH_8: {
+#if defined(DEBUG_ENABLED) && defined(DEBUG_LOG_MEM)
+            printf("Written (B) %02x to %08x\n", data, address);
+#endif
+            *ptr = (uint8_t)data;
+            return;
+        }
 	}
 }
 

@@ -31,6 +31,7 @@ static void renderMode3Scanline(GBA* gba) {
 	 * the first scanline, and so on for every scanline */
 	uint8_t y = gba->IO[VCOUNT];
 
+    printf("Y: %d |", y);
 	for (int x = 0; x < 240; x++) { 			/* 240 Pixels */
 		uint32_t address = 480*y+2*x;
 		uint16_t rgb = gba->VRAM[address] | (gba->VRAM[address+1] << 8);
@@ -38,9 +39,12 @@ static void renderMode3Scanline(GBA* gba) {
 		uint8_t g = rgb >> 5 & 0x1F;
 		uint8_t b = rgb >> 10 & 0x1F;
 
+        printf("%d %d %d |", toRGB888(r), toRGB888(g), toRGB888(b));
 		SDL_SetRenderDrawColor(gba->SDL_Renderer, toRGB888(r), toRGB888(g), toRGB888(b), 255);
 		SDL_RenderDrawPoint(gba->SDL_Renderer, x, y);
 	}
+
+    printf("\n");
 }
 
 static void renderMode4Scanline(GBA* gba) {
@@ -57,11 +61,12 @@ static void renderMode4Scanline(GBA* gba) {
 	uint32_t base = frame ? 0xA000 : 0x0000;
 	uint8_t y = gba->IO[VCOUNT];
 
-	// printf("rendering line %d, frame %d\n", y, frame);
 	for (int x = 0; x < 240; x++) {
 		/* BG Palette RAM */
 		uint8_t index = gba->VRAM[base + 240*y + x];
-		uint16_t rgb = gba->PaletteRAM[index] | (gba->PaletteRAM[index+1] << 8);
+		uint16_t rgb = gba->PaletteRAM[2*index] | (gba->PaletteRAM[2*index+1] << 8);
+
+        //if (rgb != 0xFFFF) printf("c %x\n", rgb);
 		uint8_t r = rgb & 0x1F;
 		uint8_t g = rgb >> 5 & 0x1F;
 		uint8_t b = rgb >> 10 & 0x1F;
@@ -115,7 +120,7 @@ void stepPPU(GBA* gba) {
 						}
 
 						default: {
-							printf("[WARNING] Invalid Video Mode %d, rendering white line\n", gba->videoMode);
+							//printf("[WARNING] Invalid Video Mode %d, rendering white line\n", gba->videoMode);
 							renderWhiteScanline(gba);
 							break;
 						}

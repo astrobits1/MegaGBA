@@ -5,6 +5,8 @@
 
 #ifdef DEBUG_ENABLED
 
+bool DEBUG_TRACE_FLAG = false;
+
 void (*Dissembler_ARM_LUT[4096])(GBA* gba, uint32_t opcode);
 void (*Dissembler_THUMB_LUT[256])(GBA* gba, uint16_t opcode);
 
@@ -307,6 +309,162 @@ static void HIREG_OPS_BX(struct GBA* gba, uint16_t ins) {
 	printf("R%d, R%d", Rd, Rs);
 }
 
+static void PC_Relative_Load(struct GBA* gba, uint16_t ins) {
+    uint8_t Rd = (ins >> 8) & 0b111;
+    uint16_t Imm = (ins & 0xFF) << 2;
+
+    printf("%-9s R%d, [PC, #%xh]", "LDR", Rd, Imm);
+}
+
+static void LDR_STR_REG_OFFSET(struct GBA* gba, uint16_t ins) {
+    uint8_t Rd = ins & 0b111;
+    uint8_t Rb = (ins >> 3) & 0b111;
+    uint8_t Ro = (ins >> 6) & 0b111;
+    
+    uint8_t B = (ins >> 10) & 1;
+    uint8_t L = (ins >> 11) & 1;
+
+    if (L) {
+        printf("%-9s R%d, [R%d, R%d]", B ? "LDRB" : "LDR", Rd, Rb, Ro);
+    } else {
+        printf("%-9s R%d, [R%d, R%d]", B ? "STRB" : "STR", Rd, Rb, Ro);
+    }
+}
+
+static void LDR_STR_H_SB_SH_THUMB(struct GBA* gba, uint16_t ins) {
+    uint8_t Rd = ins & 0b111;
+    uint8_t Rb = (ins >> 3) & 0b111;
+    uint8_t Ro = (ins >> 6) & 0b111;
+
+    uint8_t S = (ins >> 10) & 1;
+    uint8_t H = (ins >> 11) & 1;
+
+    if (S) {
+        printf("%-9s R%d, [R%d, R%d]", H ? "LDSH" : "LDSB", Rd, Rb, Ro);
+    } else {
+        printf("%-9s R%d, [R%d, R%d]", H ? "LDRH" : "STRH", Rd, Rb, Ro);
+    }
+}
+
+static void LDR_STR_Imm_THUMB(struct GBA* gba, uint16_t ins) {
+    uint8_t Rd = ins & 0b111;
+    uint8_t Rb = (ins >> 3) & 0b111;
+    uint8_t offset5 = (ins >> 6) & 0b11111;
+    
+    uint8_t L = (ins >> 11) & 1;
+    uint8_t B = (ins >> 12) & 1;
+
+    if (B) {
+        printf("%-9s R%d, [R%d, #%xh]", L ? "LDRB" : "STRB", Rd, Rb, offset5);
+    } else {
+        uint8_t offset = offset5 << 2;
+        printf("%-9s R%d, [R%d, #%xh]", L ? "LDR" : "STR", Rd, Rb, offset);
+    }
+}
+
+static void LDR_STR_HW_THUMB(struct GBA* gba, uint16_t ins) {
+    uint8_t Rd = ins & 0b111;
+    uint8_t Rb = (ins >> 3) & 0b111;
+    uint8_t offset5 = (ins >> 6) & 0b11111;
+
+    uint8_t L = (ins >> 11) & 1;
+    printf("%-9s R%d, [R%d, #%xh]", L ? "LDRH" : "STRH", Rd, Rb, offset5 << 1);
+}
+
+static void LDR_STR_SP_Relative_THUMB(struct GBA* gba, uint16_t ins) {
+    uint16_t offset = (ins & 0xFF) << 2;
+    uint8_t Rd = (ins >> 8) & 0b111;
+
+    uint8_t L = (ins >> 11) & 1;
+    printf("%-9s R%d, [SP, #%xh]", L ? "LDR" : "STR", Rd, offset);
+}
+
+static void LOAD_ADDRESS_THUMB(struct GBA* gba, uint16_t ins) {
+    uint16_t offset = (ins & 0xFF) << 2;
+    uint8_t Rd = (ins >> 8) & 0b111;
+    uint8_t SP = (ins >> 11) & 1;
+
+    printf("%-9s R%d, %s, #%xh", "ADD", Rd, SP ? "SP" : "PC", offset);
+}
+
+static void ADD_OFFSET_SP(struct GBA* gba, uint16_t ins) {
+    /* Add signed 9 bit offset to SP 
+     * CPSR Condition codes are not set */ 
+    int16_t soffset = (ins & 0x7F) << 2;
+    uint8_t S = (ins >> 7) & 1;
+
+    if (S) soffset = -soffset;
+
+    printf("%-9s SP, #%xh", "ADD", soffset);
+}
+
+static void PUSH_POP_REGS(struct GBA* gba, uint16_t ins) {
+    uint8_t RList = ins & 0xFF;
+    uint8_t R = (ins >> 8) & 1;
+    uint8_t L = (ins >> 11) & 1;
+
+    printf("%-9s { ", L ? "POP" : "PUSH");
+    for (int i=0; i<8; i++) {
+        if ((RList >> i) & 1) {
+            printf("R%d ", i);
+        }
+    }
+    
+    if (R) {
+        if (L) printf("PC ");
+        else printf("LR ");
+    }
+
+    printf("}");
+}
+
+static void MULTIPLE_LOAD_STORE(struct GBA* gba, uint16_t ins) {
+    uint8_t RList = ins & 0xFF;
+    uint8_t Rb = (ins >> 8) & 0b111;
+    uint8_t L = (ins >> 11) & 1;
+
+    printf("%-9s R%d!, { ", L ? "LDMIA" : "STMIA", Rb);
+    for (int i=0; i<8; i++) {
+        if ((RList >> i) & 1) {
+            printf("R%d ", i);
+        }
+    }
+    printf("}"); 
+}
+
+static void CONDITIONAL_BRANCH(struct GBA* gba, uint16_t ins) {
+    uint32_t offset = (ins & 0xFF) << 1;
+    uint8_t cond = (ins >> 8) & 0xF;
+
+    printf("B%-8s %08xh", condition(gba, cond), twosComplementOffset(gba->REG[R15], offset, 8));
+
+}
+
+static void UNCONDITIONAL_BRANCH(struct GBA* gba, uint16_t ins) {
+    uint32_t offset = (ins & 0x7FF) << 1;
+
+    printf("%-9s %08xh", "B", twosComplementOffset(gba->REG[R15], offset, 11));
+}
+
+static void SWI_THUMB(struct GBA* gba, uint16_t ins) {
+    uint8_t value = ins & 0xFF;
+
+    printf("%-9s %d\n", "SWI", value);
+}
+
+static void LONG_BRANCH_W_LINK(struct GBA* gba, uint16_t ins) {
+    uint32_t offset = ins & 0x7FF;
+    uint8_t H = (ins >> 11) & 1;
+
+    if (!H) {
+        /* Offset Low behaviour */
+        printf("BL (internal)");
+    } else {
+        /* Offset high behaviour */
+        printf("%-9s %08xh", "BL",twosComplementOffset(gba->REG[R15]-2, gba->REG[R14]-(gba->REG[R15]-2)+(offset<<1), 22));
+    }
+}
+
 static void Unimplemented_THUMB(struct GBA* gba, uint16_t ins) {
 	printf("Unimplemented %x", ins);
 }
@@ -423,16 +581,57 @@ void initDissembler() {
 
 	/* Initialising THUMB Opcode */
 	for (int index = 0; index < 256; index++) {
-
-		if ((index & 0b11111100) == 0b01000100) {
+        if ((index & 0xFF) == 0b10110000) {
+            /* Add offset to SP */
+            Dissembler_THUMB_LUT[index] = &ADD_OFFSET_SP;
+        } else if ((index & 0xFF) == 0b11011111) {
+            /* SWI - Software Interrupt */
+            Dissembler_THUMB_LUT[index] = &SWI_THUMB;
+        } else if ((index & 0b11111100) == 0b01000100) {
 			/* Hi Register Operations / BX */
-			Dissembler_THUMB_LUT[index] = &HIREG_OPS_BX; 
+			Dissembler_THUMB_LUT[index] = &HIREG_OPS_BX;
 		} else if ((index & 0b11111100) == 0b01000000) {
 			/* ALU Operations */
 			Dissembler_THUMB_LUT[index] = &ALU;
+        } else if ((index & 0b11110110) == 0b10110100) {
+            /* Push/Pop registers */
+            Dissembler_THUMB_LUT[index] = &PUSH_POP_REGS;
+        } else if ((index & 0b11111000) == 0b01001000) {
+            /* PC-Relative Load */
+            Dissembler_THUMB_LUT[index] = &PC_Relative_Load;
 		} else if ((index & 0b11111000) == 0b00011000) {
-			/* ADD/SUB with immediate or register operand */
+			/* Add/Sub with immediate or register operand */
 			Dissembler_THUMB_LUT[index] = &ADD_SUB;
+        } else if ((index & 0b11111000) == 0b11100000) {
+            /* Unconditional Branch */
+            Dissembler_THUMB_LUT[index] = &UNCONDITIONAL_BRANCH;
+        } else if ((index & 0b11110010) == 0b01010000) {
+            /* Load/Store with register offset */
+            Dissembler_THUMB_LUT[index] = &LDR_STR_REG_OFFSET;
+        } else if ((index & 0b11110010) == 0b01010010) {
+            /* Load/Store sign extended byte/halfword */
+            Dissembler_THUMB_LUT[index] = &LDR_STR_H_SB_SH_THUMB;
+        } else if ((index & 0b11110000) == 0b10000000) {
+            /* Load/Store halfword */
+            Dissembler_THUMB_LUT[index] = &LDR_STR_HW_THUMB;
+        } else if ((index & 0b11110000) == 0b10010000) {
+            /* SP relative load/store */
+            Dissembler_THUMB_LUT[index] = &LDR_STR_SP_Relative_THUMB;
+        } else if ((index & 0b11110000) == 0b10100000) {
+            /* Load Address */
+            Dissembler_THUMB_LUT[index] = &LOAD_ADDRESS_THUMB;
+        } else if ((index & 0b11110000) == 0b11000000) {
+            /* Multiple Load/Store */
+            Dissembler_THUMB_LUT[index] = &MULTIPLE_LOAD_STORE;
+        } else if ((index & 0b11110000) == 0b11010000) {
+            /* Conditional Branch */
+            Dissembler_THUMB_LUT[index] = &CONDITIONAL_BRANCH;
+        } else if ((index & 0b11110000) == 0b11110000) {
+            /* Long branch with link */
+            Dissembler_THUMB_LUT[index] = &LONG_BRANCH_W_LINK;
+        } else if ((index & 0b11100000) == 0b01100000) {
+            /* Load/Store with immediate offset */
+            Dissembler_THUMB_LUT[index] = &LDR_STR_Imm_THUMB;
 		} else if ((index & 0b11100000) == 0b00100000) {
 			/* MOV/CMP/ADD/SUB Immediate */
 			Dissembler_THUMB_LUT[index] = &MOV_CMP_ADD_SUB_Imm;
@@ -441,11 +640,10 @@ void initDissembler() {
 			Dissembler_THUMB_LUT[index] = &LSL_LSR_ASR;
 		} else {
 			Dissembler_THUMB_LUT[index] = &Unimplemented_THUMB;
-		}
+		}	
 	}
 }
 
-bool flag = false;
 
 void printStateARM(GBA* gba, uint32_t opcode) {
 #ifdef DEBUG_TRACE_STATE	
@@ -453,7 +651,7 @@ void printStateARM(GBA* gba, uint32_t opcode) {
 	uint32_t R[16];
 	memcpy(&R, &gba->REG, sizeof(uint32_t)*16);
 #ifdef DEBUG_LIMIT_REGS	
-	printf("[R0:%08x|R1:%08x|R11:%08x|R12:%08x]", R[0],R[1],R[11],R[12]); 
+	printf("[R0:%08x|R1:%08x|R2:%08x|R3:%08x|R14:%08x]", R[0],R[1],R[2],R[3],R[14]); 
 #else
 	printf("%08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X cpsr: %08X | %08X: ", R[0],R[1],R[2],R[3],R[4],R[5],R[6],R[7],R[8],R[9],R[10],R[11],R[12],R[13],R[14],R[15]-4,gba->CPSR, opcode);
 #endif
@@ -463,37 +661,27 @@ void printStateARM(GBA* gba, uint32_t opcode) {
 	Dissembler_ARM_LUT[((opcode & 0x0FF00000) >> 16) | ((opcode >> 4) & 0xF)](gba, opcode);
 	printf("\n");
 
-    if (R[12] == 0x199) {
-       flag = true;
-    }
-    if (flag) {
-       DEBUG_SET_BREAKPOINT("");
-    }
+    if (DEBUG_TRACE_FLAG) {DEBUG_SET_BREAKPOINT("");}
 #endif
 }
 
 void printStateTHUMB(GBA* gba, uint16_t opcode) {
 #ifdef DEBUG_TRACE_STATE
-printf("[T][%08x][N%dS%dC%dV%d] ", gba->REG[R15] - 4, 
-				gba->CPSR>>31, (gba->CPSR>>30)&1, (gba->CPSR>>29)&1, (gba->CPSR>>28)&1);
-	Dissembler_THUMB_LUT[opcode >> 8](gba, opcode);
-	printf("\n");
-
 #ifdef DEBUG_PRINT_REGS
 	uint32_t R[16];
 	memcpy(&R, &gba->REG, sizeof(uint32_t)*16);
 #ifdef DEBUG_LIMIT_REGS	
-	printf("[R0:%08x|R1:%08x|R2:%08x|R12:%08x|R13:%08x]\n", R[0],R[1],R[2],R[12],R[13]);
+	printf("[R0:%08x|R1:%08x|R2:%08x|R4:%08x|R5:%08x|R6:%08x|R7:%08x]", R[0],R[1],R[2],R[4],R[5], R[6],R[7]);
 #else
-	uint32_t R[16];
-	memcpy(&R, &gba->REG, sizeof(uint32_t)*16);
-
 	printf("%08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X cpsr: %08X | %08X: ", R[0],R[1],R[2],R[3],R[4],R[5],R[6],R[7],R[8],R[9],R[10],R[11],R[12],R[13],R[14],R[15]-2,gba->CPSR, opcode);
-
+#endif
+#endif
+    printf("[T][%08x][N%dS%dC%dV%d] ", gba->REG[R15] - 4, 
+				gba->CPSR>>31, (gba->CPSR>>30)&1, (gba->CPSR>>29)&1, (gba->CPSR>>28)&1);
 	Dissembler_THUMB_LUT[opcode >> 8](gba, opcode);
 	printf("\n");
-#endif	
-#endif
+
+    if (DEBUG_TRACE_FLAG) {DEBUG_SET_BREAKPOINT("");}
 #endif
 }
 

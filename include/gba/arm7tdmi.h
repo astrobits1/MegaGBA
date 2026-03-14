@@ -62,4 +62,7 @@ enum { 							/* Helpful register abbreviations */
 void initialiseCPU(GBA* gba);
 void stepCPU(GBA* gba);
 
+/* Helpers */
+uint32_t twosComplementOffset(uint32_t base, uint32_t offset, uint8_t signBit);
+
 #endif

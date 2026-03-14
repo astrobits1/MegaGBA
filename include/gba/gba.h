@@ -64,7 +64,9 @@ typedef enum {
 	BG0CNT 		= 0x00000008,
 	BG1CNT 		= 0x0000000A,
 	BG2CNT 		= 0x0000000C,
-	BG3CNT 		= 0x0000000E
+	BG3CNT 		= 0x0000000E,
+
+    KEYINPUT    = 0x00000130
 } IO_REG;
 
 struct GBA {
