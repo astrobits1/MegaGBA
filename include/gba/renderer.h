@@ -1,6 +1,12 @@
 #ifndef gba_renderer_h
 #define gba_renderer_h
 
+#define HEIGHT_PX 160
+#define WIDTH_PX 240
+#define DISPLAY_SCALING 4
+
+#define BYTES_PER_Y WIDTH_PX*sizeof(uint16_t)
+
 typedef struct GBA GBA;
 
 typedef enum {

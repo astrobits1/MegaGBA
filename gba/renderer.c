@@ -7,31 +7,25 @@ static inline void latchDISPCNT(GBA* gba) {
     gba->latchedDISPCNT = DISPCNT;
 }
 
-static inline uint8_t toRGB888(uint8_t rgb555) {
-    /* Input can be red, green or blue value of rgb 555 */
-    return (rgb555 << 3) | (rgb555 >> 2);
-}
-
 static inline uint16_t readPaletteRAM(GBA* gba, uint8_t index) {
     /* Returns rgb555 */
     return gba->PaletteRAM[2*index] | (gba->PaletteRAM[2*index+1] << 8);
 }
 
-static void setSDLPaletteColour(GBA* gba, uint16_t rgb555) {
-    /* Helper function to set SDL draw colour to rgb555 palette value */
-	uint8_t r = rgb555 & 0x1F;
-	uint8_t g = rgb555 >> 5 & 0x1F;
-	uint8_t b = rgb555 >> 10 & 0x1F;
-
-	SDL_SetRenderDrawColor(gba->SDL_Renderer, toRGB888(r), toRGB888(g), toRGB888(b), 255);
+static void repeatLoadFramebuffer(GBA* gba, uint16_t rgb, uint16_t* start, uint32_t size) {
+    /* Repeat an RG555 colour across framebuffer from a given start point for size no. of pixels */
+    for (uint32_t i=0; i<size; i++) {
+        start[i] = rgb;
+    }
 }
 
 /* ---------------------------------------------------------------------- */
 
 
 static void renderWhiteScanline(GBA* gba) {
-	SDL_SetRenderDrawColor(gba->SDL_Renderer, 255, 255, 255, 255);
-	SDL_RenderDrawLine(gba->SDL_Renderer, 0, gba->IO[VCOUNT], 239, gba->IO[VCOUNT]);
+    /* Load a white scanline at current y in framebuffer */
+    uint16_t* start = &gba->framebuffer[gba->IO[VCOUNT]*WIDTH_PX];
+    memset(start, 0xFF, BYTES_PER_Y);
 }
 
 static void renderBGMode0Scanline(GBA* gba) {
@@ -83,8 +77,8 @@ static void renderBGMode0Scanline(GBA* gba) {
 
             uint32_t byteOffset = tileRowsBefore*32*2;   /* Offset to be applied on mapData base to reach current tile row */
 
-            /* For now we dont consider scrolling, flipping or any other elements 
-             * Process from tile0 to til 29, which completes 240 horizontal pixels */
+            /* For now we dont consider scrolling or any other elements 
+             * Process from tile 0 to tile 29, which completes 240 horizontal pixels */
             for (int i=0; i<30; i++) {
                 uint32_t tileEntryAddress = mapDataBase + byteOffset + 2*i;
                 uint16_t tileEntry = busRead(gba, tileEntryAddress, WIDTH_16);
@@ -99,38 +93,34 @@ static void renderBGMode0Scanline(GBA* gba) {
                     /* 8 bit color depth - 256/1 
                      * 64 bytes / tile */
                     uint32_t tileStartAddress = tileDataBase + tileNumber*64;
-                    uint32_t rowStartAddress = tileStartAddress + pixelRow*8;
+                    uint32_t rowStartAddress = tileStartAddress + (vFlip ? (7-pixelRow) : pixelRow)*8;
 
                     /* 8 bytes per row, 1 byte per pixel */
                     for (int j=0; j<8; j++) {
                         uint8_t pixelPalette = busRead(gba, rowStartAddress+j, WIDTH_8);
                         uint16_t rgb = readPaletteRAM(gba, pixelPalette);
-                        uint8_t x = i*8 + j;
+                        uint8_t x = i*8 + (hFlip ? 7-j : j);
 
-                        setSDLPaletteColour(gba, rgb);
-                        SDL_RenderDrawPoint(gba->SDL_Renderer, x, y);
+                        gba->framebuffer[y*WIDTH_PX+x] = rgb;
                     }
                 } else {
                     /* 4 bit colour depth - 16/16 
                      * 32 bytes / tile */
                     uint32_t tileStartAddress = tileDataBase + tileNumber*32;
-                    uint32_t rowStartAddress = tileStartAddress + pixelRow*4;
+                    uint32_t rowStartAddress = tileStartAddress + (vFlip ? (7-pixelRow) : pixelRow)*4;
 
                     for (int j=0; j<4; j++) {
                         uint8_t paletteData = busRead(gba, rowStartAddress+j, WIDTH_8);
                         uint8_t paletteLeft = paletteData & 0xF;
                         uint8_t paletteRight = paletteData >> 4;
 
-                        uint8_t xL = i*8+j*2;
-                        uint8_t xR = xL+1;
+                        uint8_t xL = i*8 + (hFlip ? 7-j*2 : j-2);
+                        uint8_t xR = xL+(hFlip ? -1 : +1);
                         uint16_t rgbL = readPaletteRAM(gba, paletteNum*16+paletteLeft);
                         uint16_t rgbR = readPaletteRAM(gba, paletteNum*16+paletteRight);
 
-                        setSDLPaletteColour(gba, rgbL);
-                        SDL_RenderDrawPoint(gba->SDL_Renderer, xL, y);
-
-                        setSDLPaletteColour(gba, rgbR);
-                        SDL_RenderDrawPoint(gba->SDL_Renderer, xR, y);
+                        gba->framebuffer[y*WIDTH_PX+xL] = rgbL;
+                        gba->framebuffer[y*WIDTH_PX+xR] = rgbR;
                     }
                 }
             }
@@ -156,8 +146,7 @@ static void renderBGMode3Scanline(GBA* gba) {
 		uint32_t address = 480*y+2*x;
 		uint16_t rgb = gba->VRAM[address] | (gba->VRAM[address+1] << 8);
 
-        setSDLPaletteColour(gba, rgb);
-		SDL_RenderDrawPoint(gba->SDL_Renderer, x, y);
+        gba->framebuffer[y*WIDTH_PX+x] = rgb;
 	}
 }
 
@@ -179,8 +168,7 @@ static void renderBGMode4Scanline(GBA* gba) {
 		uint8_t index = gba->VRAM[base + 240*y + x];
 		uint16_t rgb = readPaletteRAM(gba, index);
 
-        setSDLPaletteColour(gba, rgb);
-        SDL_RenderDrawPoint(gba->SDL_Renderer, x, y);
+        gba->framebuffer[y*WIDTH_PX+x] = rgb; 
 	}
 }
 
@@ -197,9 +185,7 @@ static void renderBGMode5Scanline(GBA* gba) {
             uint32_t address = 320*y+2*x;
             uint16_t rgb = gba->VRAM[address] | (gba->VRAM[address+1] << 8);	
 
-		   
-            setSDLPaletteColour(gba, rgb);
-		    SDL_RenderDrawPoint(gba->SDL_Renderer, x, y);
+		    gba->framebuffer[y*WIDTH_PX+x] = rgb;  
 	    }
     }
 
@@ -209,8 +195,9 @@ static void renderBGMode5Scanline(GBA* gba) {
 
     uint16_t rgb = gba->PaletteRAM[0] | (gba->PaletteRAM[1] << 8);
 
-    setSDLPaletteColour(gba, rgb);
-	SDL_RenderDrawLine(gba->SDL_Renderer, y>=128 ? 0 : 160 , y, 239, y);
+    for (int i= y>=128 ? 0 : 160; i<240; i++) {
+        gba->framebuffer[y*WIDTH_PX+i] = rgb;
+    }
 }
 
 /* ------------------------------------------------------------------------------- */
@@ -220,6 +207,8 @@ void initialisePPU(GBA* gba) {
 	gba->ppuHState = PPU_HDRAW;
 	gba->ppuVState = PPU_VDRAW;
 
+    /* Initialise framebuffer to full white */
+    memset(&gba->framebuffer, 0xFF, WIDTH_PX*HEIGHT_PX*sizeof(uint16_t));
     latchDISPCNT(gba);
 }
 
@@ -303,6 +292,12 @@ void stepPPU(GBA* gba) {
 					gba->IO[DISPSTAT] |= 1;
 
 					SDLEvents(gba);
+
+                    /* Update texture with framebuffer and render it at the end of frame */
+                    SDL_UpdateTexture(gba->SDL_Texture, NULL, &gba->framebuffer, WIDTH_PX*sizeof(uint16_t));
+
+                    SDL_RenderClear(gba->SDL_Renderer);
+                    SDL_RenderCopy(gba->SDL_Renderer, gba->SDL_Texture, NULL, NULL);
 					SDL_RenderPresent(gba->SDL_Renderer);
 				} else {
 					/* Latch DISPCNT if not entering VBLANK */

@@ -2,6 +2,7 @@
 #include <gba/arm7tdmi.h>
 #include <gba/gamepak.h>
 #include <gba/debugGBA.h>
+#include <gba/renderer.h>
 #include <SDL2/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,12 +11,20 @@
 
 bool initialiseSDL(GBA* gba) {
     SDL_Init(SDL_INIT_EVERYTHING);
-    SDL_CreateWindowAndRenderer(WIDTH_PX * DISPLAY_SCALING, HEIGHT_PX * DISPLAY_SCALING, SDL_WINDOW_SHOWN,
-            &gba->SDL_Window, &gba->SDL_Renderer);
 
-    if (!gba->SDL_Window) return false;          /* Failed to create screen */
+    gba->SDL_Window = SDL_CreateWindow("MegaGBA", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WIDTH_PX * DISPLAY_SCALING, HEIGHT_PX * DISPLAY_SCALING, SDL_WINDOW_SHOWN);
+    //SDL_CreateWindowAndRenderer(WIDTH_PX * DISPLAY_SCALING, HEIGHT_PX * DISPLAY_SCALING, SDL_WINDOW_SHOWN,&gba->SDL_Window, &gba->SDL_Renderer);
 
-    SDL_SetWindowTitle(gba->SDL_Window, "MegaGBA");
+    if (gba->SDL_Window == NULL) return false;          /* Failed to create screen */
+
+    gba->SDL_Renderer = SDL_CreateRenderer(gba->SDL_Window, -1, SDL_RENDERER_ACCELERATED);
+
+    if (gba->SDL_Renderer == NULL) return false; 
+
+    gba->SDL_Texture = SDL_CreateTexture(gba->SDL_Renderer, SDL_PIXELFORMAT_BGR555, SDL_TEXTUREACCESS_STREAMING, WIDTH_PX, HEIGHT_PX);
+
+    if (gba->SDL_Texture == NULL) return false;
+
     SDL_RenderSetScale(gba->SDL_Renderer, DISPLAY_SCALING, DISPLAY_SCALING);
     SDL_RenderClear(gba->SDL_Renderer);
     return true;
@@ -70,12 +79,14 @@ void SDLEvents(GBA* gba) {
 }
 
 void cleanSDL(GBA* gba) {
+    SDL_DestroyTexture(gba->SDL_Texture);
 	SDL_DestroyRenderer(gba->SDL_Renderer);
     SDL_DestroyWindow(gba->SDL_Window);
     SDL_Quit();
 
 	gba->SDL_Renderer = NULL;
 	gba->SDL_Window = NULL;
+    gba->SDL_Renderer = NULL;
 }
 
 /* ----------------------------------------------------- */
@@ -96,6 +107,7 @@ static void initialiseIO(GBA* gba) {
 void initialiseGBA(GBA* gba, GamePak* gamepak, uint8_t* biosBuffer, size_t biosSize) {
 	gba->gamepak = gamepak;
 	gba->run = false;
+    gba->SDL_Texture = NULL;
 	gba->SDL_Renderer = NULL;
 	gba->SDL_Window = NULL;
 

@@ -8,11 +8,6 @@
 #include <gba/renderer.h>
 #include <gba/gamepak.h>
 
-#define HEIGHT_PX 160
-#define WIDTH_PX 240
-#define DISPLAY_SCALING 4
-
-
 enum {
 	BIOS_ROM_16KB 		= 0x00000000,
 	BIOS_ROM_16KB_END 	= 0x00003FFF,
@@ -104,6 +99,7 @@ struct GBA {
 	void (*THUMB_LUT[256])(struct GBA* gba, uint16_t ins);		/* Lookup table with 8 bit indices
 																   for THUMB instructions */
 	/* ----------------- Renderer ---------------- */
+    uint16_t framebuffer[WIDTH_PX*HEIGHT_PX];       /* Framebuffer used with sdl textures for rendering */
     uint16_t latchedDISPCNT;
 	
 	uint8_t ppuVState; 					// Current Vertical State of PPU
@@ -112,6 +108,7 @@ struct GBA {
 	/* ----------------- Emulator ---------------- */
 	SDL_Window* SDL_Window; 			/* SDL Window struct pointer */
 	SDL_Renderer* SDL_Renderer; 		/* SDL Renderer struct pointer */
+    SDL_Texture* SDL_Texture;           /* SDL Texture for rendering */
 	GamePak* gamepak; 					/* Cartridge containing allocated code and important info
 										   about the game */
 	bool run; 							/* Flag used to stop the emulator and check if its running */
