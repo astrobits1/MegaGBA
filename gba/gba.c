@@ -99,17 +99,6 @@ void initialiseGBA(GBA* gba, GamePak* gamepak, uint8_t* biosBuffer, size_t biosS
 	gba->SDL_Renderer = NULL;
 	gba->SDL_Window = NULL;
 
-	/* Initial Latched DISPCNT values */
-	gba->BG0_Flag = 0;
-	gba->BG1_Flag = 0;
-	gba->BG2_Flag = 0;
-	gba->BG3_Flag = 0;
-	gba->forcedBlank = 0;
-    gba->frameSelect = 0;
-	gba->ppuHState = PPU_HDRAW;
-	gba->ppuVState = PPU_VDRAW;
-	gba->bgMode = BGMODE_0;
-
 	/* Allocate memory for components */
 	uint8_t* IWRAM 		= (uint8_t*)malloc(0x8000);			// 32 KB
 	uint8_t* EWRAM 		= (uint8_t*)malloc(0x40000); 		// 256 KB
@@ -143,6 +132,7 @@ void initialiseGBA(GBA* gba, GamePak* gamepak, uint8_t* biosBuffer, size_t biosS
 
 	/* Initialising functions */
 	initialiseCPU(gba);
+    initialisePPU(gba);
     initialiseIO(gba);
 
 	bool initSDL = initialiseSDL(gba);
@@ -185,7 +175,6 @@ void startGBAEmulator(GamePak* gamepak, uint8_t* biosBuffer, size_t biosSize) {
 
 	gba.run = true;
 
-	latchDISPCNT(&gba);
 	/* For now, we take each instruction as 1 cycle consumed */
 
 	while (gba.run) {

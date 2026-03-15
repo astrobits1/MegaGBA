@@ -20,8 +20,7 @@ typedef enum {
 	PPU_VBLANK				// }
 } PPU_State;
 
-/* Latch the value of DISPCNT into internal fields */
-void latchDISPCNT(GBA* gba);
+void initialisePPU(GBA* gba);
 /* Step the PPU State */
 void stepPPU(GBA* gba);
 

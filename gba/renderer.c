@@ -2,21 +2,19 @@
 #include <gba/renderer.h>
 #include <SDL2/SDL.h>
 
-void latchDISPCNT(GBA* gba) {
+static inline void latchDISPCNT(GBA* gba) {
 	uint16_t DISPCNT = readIO(gba, DISPCNT, WIDTH_16);
-
-	/* Note: Values 6 and 7 are prohibited and dont mean anything */
-	gba->bgMode = DISPCNT & 0b111;
-	gba->forcedBlank = DISPCNT >> 7 & 1;
-	gba->BG0_Flag = DISPCNT >> 8 & 1;
-	gba->BG1_Flag = DISPCNT >> 9 & 1;
-	gba->BG2_Flag = DISPCNT >> 10 & 1;
-	gba->BG3_Flag = DISPCNT >> 11 & 1;
+    gba->latchedDISPCNT = DISPCNT;
 }
 
 static inline uint8_t toRGB888(uint8_t rgb555) {
     /* Input can be red, green or blue value of rgb 555 */
     return (rgb555 << 3) | (rgb555 >> 2);
+}
+
+static inline uint16_t readPaletteRAM(GBA* gba, uint8_t index) {
+    /* Returns rgb555 */
+    return gba->PaletteRAM[2*index] | (gba->PaletteRAM[2*index+1] << 8);
 }
 
 static void setSDLPaletteColour(GBA* gba, uint16_t rgb555) {
@@ -34,6 +32,117 @@ static void setSDLPaletteColour(GBA* gba, uint16_t rgb555) {
 static void renderWhiteScanline(GBA* gba) {
 	SDL_SetRenderDrawColor(gba->SDL_Renderer, 255, 255, 255, 255);
 	SDL_RenderDrawLine(gba->SDL_Renderer, 0, gba->IO[VCOUNT], 239, gba->IO[VCOUNT]);
+}
+
+static void renderBGMode0Scanline(GBA* gba) {
+    /* BG Mode 0 - Text mode only */
+
+    /* Use one of BG0-3 based on priority */
+    uint16_t BGCNT = 0;
+    /* Priority goes from 0-3, 3 being the lowest */
+    uint8_t lowestPrio = 4;
+
+    for (int i=8; i<12; i++) {
+        if (gba->latchedDISPCNT >> i & 1) {
+            uint16_t CNT = readIO(gba, BG0CNT+2*(i-8), WIDTH_16);
+            uint8_t prio = CNT & 0b11;
+            if (prio < lowestPrio) {
+                lowestPrio = prio;
+                BGCNT = CNT;
+            }
+
+            /* If priority comes out to be equal to the previous lowest,
+             * since lower BG(N) corresponds to higher priority in that case
+             * we do nothing as lower must have been iterated before */
+        }
+    }
+
+    if (lowestPrio == 4) {
+        /* No BG layer enabled, render white scanline */
+        renderWhiteScanline(gba);
+        return;
+    }
+
+    /* Identify Character(Tile) data base block and Screen (BG Map) base block 
+     * and extract rest of the parameters from BGCNT */
+    uint32_t tileDataBase = VRAM_96KB + (BGCNT >> 2 & 0b11)*0x4000;
+    uint32_t mapDataBase  = VRAM_96KB + (BGCNT >> 8 & 0x1F)*0x800;
+    uint8_t colorDepth = BGCNT >> 7 & 1;
+    uint8_t screenSize = BGCNT >> 14 & 0b11;
+
+    /* A BG Map is a 32x32 tile (256x256 pixel) sequentially loaded array of 2 byte/tile index data 
+     * There can be anywhere from 1 to 4 BG Maps loaded in VRAM based on screen size */
+
+    uint8_t y = gba->IO[VCOUNT];
+
+    switch (screenSize) {
+        case 0: {
+            /* Text mode - screen size 0 - 32x32 tile (256x256 pixel) singular map specified at base */
+            uint8_t pixelRow = y&0b111;                  /* 0-7 within tile */
+            uint32_t tileRowsBefore = (y&(~0b111))/8;    /* No. of tile rows before the tile we are on */
+
+            uint32_t byteOffset = tileRowsBefore*32*2;   /* Offset to be applied on mapData base to reach current tile row */
+
+            /* For now we dont consider scrolling, flipping or any other elements 
+             * Process from tile0 to til 29, which completes 240 horizontal pixels */
+            for (int i=0; i<30; i++) {
+                uint32_t tileEntryAddress = mapDataBase + byteOffset + 2*i;
+                uint16_t tileEntry = busRead(gba, tileEntryAddress, WIDTH_16);
+
+                /* Tile entry in tileMap has been calculated */
+                uint16_t tileNumber = tileEntry & 0x3FF;            /* Tile index in tileData */
+                uint8_t hFlip = tileEntry >> 10 & 1;                /* Horizontal Flip */
+                uint8_t vFlip = tileEntry >> 11 & 1;                /* Vertical Flip */
+                uint8_t paletteNum = tileEntry >> 12 & 0xF;         /* for 4 bit color depth mode only */
+
+                if (colorDepth == 1) {
+                    /* 8 bit color depth - 256/1 
+                     * 64 bytes / tile */
+                    uint32_t tileStartAddress = tileDataBase + tileNumber*64;
+                    uint32_t rowStartAddress = tileStartAddress + pixelRow*8;
+
+                    /* 8 bytes per row, 1 byte per pixel */
+                    for (int j=0; j<8; j++) {
+                        uint8_t pixelPalette = busRead(gba, rowStartAddress+j, WIDTH_8);
+                        uint16_t rgb = readPaletteRAM(gba, pixelPalette);
+                        uint8_t x = i*8 + j;
+
+                        setSDLPaletteColour(gba, rgb);
+                        SDL_RenderDrawPoint(gba->SDL_Renderer, x, y);
+                    }
+                } else {
+                    /* 4 bit colour depth - 16/16 
+                     * 32 bytes / tile */
+                    uint32_t tileStartAddress = tileDataBase + tileNumber*32;
+                    uint32_t rowStartAddress = tileStartAddress + pixelRow*4;
+
+                    for (int j=0; j<4; j++) {
+                        uint8_t paletteData = busRead(gba, rowStartAddress+j, WIDTH_8);
+                        uint8_t paletteLeft = paletteData & 0xF;
+                        uint8_t paletteRight = paletteData >> 4;
+
+                        uint8_t xL = i*8+j*2;
+                        uint8_t xR = xL+1;
+                        uint16_t rgbL = readPaletteRAM(gba, paletteNum*16+paletteLeft);
+                        uint16_t rgbR = readPaletteRAM(gba, paletteNum*16+paletteRight);
+
+                        setSDLPaletteColour(gba, rgbL);
+                        SDL_RenderDrawPoint(gba->SDL_Renderer, xL, y);
+
+                        setSDLPaletteColour(gba, rgbR);
+                        SDL_RenderDrawPoint(gba->SDL_Renderer, xR, y);
+                    }
+                }
+            }
+
+            break;
+        }
+
+        default: {
+            renderWhiteScanline(gba);
+            break;
+        }
+    }
 }
 
 static void renderBGMode3Scanline(GBA* gba) {
@@ -62,13 +171,13 @@ static void renderBGMode4Scanline(GBA* gba) {
 	 * The byte represents the BG Palette RAM index, color 0 being transparent 
 	 * Note: Transparent color is the color 0 of BG Palette, currently sprites are not supported */
 
-	uint32_t base = gba->frameSelect ? 0xA000 : 0x0000;
+	uint32_t base = (gba->latchedDISPCNT >> 4 & 1) ? 0xA000 : 0x0000;
 	uint8_t y = gba->IO[VCOUNT];
 
 	for (int x = 0; x < 240; x++) {
 		/* BG Palette RAM */
 		uint8_t index = gba->VRAM[base + 240*y + x];
-		uint16_t rgb = gba->PaletteRAM[2*index] | (gba->PaletteRAM[2*index+1] << 8);
+		uint16_t rgb = readPaletteRAM(gba, index);
 
         setSDLPaletteColour(gba, rgb);
         SDL_RenderDrawPoint(gba->SDL_Renderer, x, y);
@@ -79,7 +188,7 @@ static void renderBGMode5Scanline(GBA* gba) {
     /* 2 byte per colour direct bitmap just like mode 3,
      * but display size is reduced to 160x128. This allows us to have 2 frames
      * that are swapable like mode 4. */
-	uint32_t base = gba->frameSelect ? 0xA000 : 0x0000;
+	uint32_t base = (gba->latchedDISPCNT >> 4 & 1) ? 0xA000 : 0x0000;
 	uint8_t y = gba->IO[VCOUNT];
 
     if (y < 128) {
@@ -101,11 +210,18 @@ static void renderBGMode5Scanline(GBA* gba) {
     uint16_t rgb = gba->PaletteRAM[0] | (gba->PaletteRAM[1] << 8);
 
     setSDLPaletteColour(gba, rgb);
-	SDL_RenderDrawLine(gba->SDL_Renderer, y>=128 ? 0 : 160 , gba->IO[VCOUNT], 239, gba->IO[VCOUNT]);
+	SDL_RenderDrawLine(gba->SDL_Renderer, y>=128 ? 0 : 160 , y, 239, y);
 }
 
 /* ------------------------------------------------------------------------------- */
 
+
+void initialisePPU(GBA* gba) {
+	gba->ppuHState = PPU_HDRAW;
+	gba->ppuVState = PPU_VDRAW;
+
+    latchDISPCNT(gba);
+}
 
 void stepPPU(GBA* gba) {
 	/* Called at the end of every HDRAW and HBLANK to synchronize
@@ -117,25 +233,31 @@ void stepPPU(GBA* gba) {
 	/* DISPCNT should be latched at the start of HDRAW and unlatched at start of HBLANK.
 	 * The PPU is called to synchornize after the CPU is done for the particular amount of cycles
 	 * this means we're doing a post-sync */
- 
+    uint16_t STAT = readIO(gba, DISPSTAT, WIDTH_16);
+
 	switch (gba->ppuVState) {
 		case PPU_VDRAW: {
 			if (gba->ppuHState == PPU_HDRAW) {
 				/* Check for V-Count match in DISPSTAT */
-				uint8_t vmatch = gba->IO[DISPSTAT + 1];
+				uint8_t vmatch = STAT >> 8;
 				if (vmatch == gba->IO[VCOUNT]) {
-					gba->IO[DISPSTAT] |= 0b100;
-				} else gba->IO[DISPSTAT] &= ~0b100;
+					writeIO(gba, DISPSTAT, STAT | 0b100, WIDTH_16);
+				} else writeIO(gba, DISPSTAT, STAT & ~0b100, WIDTH_16);
 
 				/* CPU has finished running through HDRAW, now render the entire scanline
 				 * using latched DISPCNT values */
-				if (gba->forcedBlank) {
+				if (gba->latchedDISPCNT >> 7 & 1) {
 					renderWhiteScanline(gba);
 				} else {
-					switch (gba->bgMode) {
+                    uint8_t BG2_Flag = gba->latchedDISPCNT >> 10 & 1;
+					switch (gba->latchedDISPCNT & 0b111) {
+                        case BGMODE_0: {
+                            renderBGMode0Scanline(gba);
+                            break;
+                        }
 						case BGMODE_3: {
 							/* Video/BG mode 3 -> Bitmap */
-							if (gba->BG2_Flag) {
+							if (BG2_Flag) {
 								renderBGMode3Scanline(gba);
 							} else {
 								/* BG2 not enabled, render white scanline */
@@ -145,12 +267,12 @@ void stepPPU(GBA* gba) {
 						}
 
 						case BGMODE_4: {
-							if (gba->BG2_Flag) renderBGMode4Scanline(gba);
+							if (BG2_Flag) renderBGMode4Scanline(gba);
 							else renderWhiteScanline(gba);
 							break;
 						}
                         case BGMODE_5: {
-                            if (gba->BG2_Flag) renderBGMode5Scanline(gba);
+                            if (BG2_Flag) renderBGMode5Scanline(gba);
                             else renderWhiteScanline(gba);
                             break;
                         }
@@ -193,18 +315,18 @@ void stepPPU(GBA* gba) {
 			/* PPU is not rendering anything, and is in VBLANK */
 			if (gba->ppuHState == PPU_HDRAW) {
 				/* Check for V-Count match in DISPSTAT */
-				uint8_t vmatch = gba->IO[DISPSTAT + 1];
+				uint8_t vmatch = STAT >> 8;
 				if (vmatch == gba->IO[VCOUNT]) {
-					gba->IO[DISPSTAT] |= 0b100;
-				} else gba->IO[DISPSTAT] &= ~0b100;
+					writeIO(gba, DISPSTAT, STAT | 0b100, WIDTH_16);
+				} else writeIO(gba, DISPSTAT, STAT & ~0b100, WIDTH_16);
 
 				/* Set HBLANK DISPSTAT flag (should be done later) */
-				gba->IO[DISPSTAT] |= 0b10;
+				writeIO(gba, DISPSTAT, STAT | 0b10, WIDTH_16);
 				gba->ppuHState = PPU_HBLANK;
 			} else if (gba->ppuHState == PPU_HBLANK) {
 				gba->IO[VCOUNT]++;
 				/* Set HDRAW, Clear HBLANK DISPSTAT flag */
-				gba->IO[DISPSTAT] &= ~0b10;
+				writeIO(gba, DISPSTAT, STAT & ~0b10, WIDTH_16);
 				gba->ppuHState = PPU_HDRAW;
 
 				if (gba->IO[VCOUNT] == 228) {
@@ -215,7 +337,7 @@ void stepPPU(GBA* gba) {
 					latchDISPCNT(gba);
 				} else if (gba->IO[VCOUNT] == 227) {
 					/* Last line of VBLANK, unset VBLANK flag in DISPSTAT */
-					gba->IO[DISPSTAT] &= ~1;
+					writeIO(gba, DISPSTAT, STAT & ~1, WIDTH_16);
 				}
 			}
 			break;
