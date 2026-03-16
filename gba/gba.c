@@ -273,6 +273,10 @@ uint32_t busRead(GBA* gba, uint32_t address, uint8_t size) {
 	} else if (address >= IO_REG_1KB && address <= IO_REG_1KB_END) {
 		/* Read from IO register */
 		ptr = &gba->IO[address - IO_REG_1KB];
+
+        if ((address - IO_REG_1KB) >= BG0HOFS && (address - IO_REG_1KB) <= BG3VOFS) {
+            return 0;
+        }
 	} else if (address >= PALETTE_RAM_1KB && address <= PALETTE_RAM_1KB_END) {
 		/* Read from Palette RAM */
 		ptr = &gba->PaletteRAM[address - PALETTE_RAM_1KB];	

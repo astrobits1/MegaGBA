@@ -33,6 +33,8 @@ static void renderBGMode0Scanline(GBA* gba) {
 
     /* Use one of BG0-3 based on priority */
     uint16_t BGCNT = 0;
+    uint16_t BGHOFS = 0;
+    uint16_t BGVOFS = 0;
     /* Priority goes from 0-3, 3 being the lowest */
     uint8_t lowestPrio = 4;
 
@@ -43,6 +45,8 @@ static void renderBGMode0Scanline(GBA* gba) {
             if (prio < lowestPrio) {
                 lowestPrio = prio;
                 BGCNT = CNT;
+                BGHOFS = readIO(gba, BG0HOFS+2*(i-8), WIDTH_16);
+                BGVOFS = readIO(gba, BG0VOFS+2*(i-8), WIDTH_16);
             }
 
             /* If priority comes out to be equal to the previous lowest,
@@ -57,29 +61,95 @@ static void renderBGMode0Scanline(GBA* gba) {
         return;
     }
 
+
     /* Identify Character(Tile) data base block and Screen (BG Map) base block 
-     * and extract rest of the parameters from BGCNT */
+     * and extract rest of the parameters from BGCNT 
+     *
+     * SC1-3 may or may not be used depending on screen size, but are pre calculated
+     * By default map base is set to SC0 */
+    uint32_t screen0Base = VRAM_96KB + (BGCNT >> 8 & 0x1F)*0x800;
+    uint32_t screen1Base = screen0Base + 0x800;
+    uint32_t screen2Base = screen1Base + 0x800;
+    uint32_t screen3Base = screen2Base + 0x800;
+
     uint32_t tileDataBase = VRAM_96KB + (BGCNT >> 2 & 0b11)*0x4000;
-    uint32_t mapDataBase  = VRAM_96KB + (BGCNT >> 8 & 0x1F)*0x800;
+    uint32_t mapDataBase  = screen0Base;              
     uint8_t colorDepth = BGCNT >> 7 & 1;
     uint8_t screenSize = BGCNT >> 14 & 0b11;
 
     /* A BG Map is a 32x32 tile (256x256 pixel) sequentially loaded array of 2 byte/tile index data 
      * There can be anywhere from 1 to 4 BG Maps loaded in VRAM based on screen size */
 
-    uint8_t y = gba->IO[VCOUNT];
+    uint8_t yReal = gba->IO[VCOUNT];
 
     switch (screenSize) {
+        case 1: case 2: case 3:
         case 0: {
             /* Text mode - screen size 0 - 32x32 tile (256x256 pixel) singular map specified at base */
+
+            /* y is calculated by offseting VCOUNT by veritcal scroll and a modulo with 256 is applied
+             * (full y is also modulo'd with 512) */
+            uint16_t y = (gba->IO[VCOUNT]+(BGVOFS & 0x1FF)) & 0x1FF;
+
+            if (y > 0xFF) {
+                /* Wrap around itself, or extend to SC1/SC2 depending on screen size 
+                 * For Y this is done only once, as scanline position does not change
+                 * But for X it may change multiple times during rendering */
+
+                y &= 0xFF;
+
+                switch (screenSize) {
+                    case BG_TEXT_256_512:
+                        mapDataBase = screen1Base;
+                        break;
+                    case BG_TEXT_512_512:
+                        mapDataBase = screen2Base;
+                        break;
+                        
+                }
+            }
+
             uint8_t pixelRow = y&0b111;                  /* 0-7 within tile */
             uint32_t tileRowsBefore = (y&(~0b111))/8;    /* No. of tile rows before the tile we are on */
 
             uint32_t byteOffset = tileRowsBefore*32*2;   /* Offset to be applied on mapData base to reach current tile row */
 
-            /* For now we dont consider scrolling or any other elements 
-             * Process from tile 0 to tile 29, which completes 240 horizontal pixels */
-            for (int i=0; i<30; i++) {
+            /* Calculate starting tile and starting pixel within tile based on horizontal scrolling 
+            */
+            uint8_t startTile = ((BGHOFS&(~0b111))/8) & 0x3F;
+
+            if (startTile > 0x1F) {
+                /* Wrap around itself or extend to SC1/SC3 depending on screen size
+                 * (modulo by 32) */
+                startTile &= 0x1F;
+
+                switch (screenSize) {
+                    case BG_TEXT_512_256:
+                        /* Top Right Quadrant */
+                        mapDataBase = screen1Base;
+                        break;
+                    case BG_TEXT_512_512: {
+                        if (mapDataBase == screen2Base) {
+                            /* Bottom right quadrant */
+                            mapDataBase = screen3Base;
+                        } else if (mapDataBase == screen0Base) {
+                            /* Top right quadrant */
+                            mapDataBase = screen1Base;
+                        }
+                        break;
+                    }
+                }
+            }
+
+            uint8_t startPixel = BGHOFS&0b111;
+
+            /* We should start from first tile and keep going indefinitely till buffer is full.
+             * When we are done filling the scanline framebuffer, the rendering for scanline 
+             * would stop. We need to ensure that horizontal wrapping is done properly using mod 32 */
+            bool flag=true;
+            uint16_t i = startTile;
+
+            while (flag) { 
                 uint32_t tileEntryAddress = mapDataBase + byteOffset + 2*i;
                 uint16_t tileEntry = busRead(gba, tileEntryAddress, WIDTH_16);
 
@@ -89,38 +159,79 @@ static void renderBGMode0Scanline(GBA* gba) {
                 uint8_t vFlip = tileEntry >> 11 & 1;                /* Vertical Flip */
                 uint8_t paletteNum = tileEntry >> 12 & 0xF;         /* for 4 bit color depth mode only */
 
-                if (colorDepth == 1) {
-                    /* 8 bit color depth - 256/1 
-                     * 64 bytes / tile */
-                    uint32_t tileStartAddress = tileDataBase + tileNumber*64;
-                    uint32_t rowStartAddress = tileStartAddress + (vFlip ? (7-pixelRow) : pixelRow)*8;
+                /* Indexing based on colour depth */
+                uint8_t bytesPerTile = colorDepth == 1 ? 64 : 32;
+                uint8_t bytesPerPixelRow  = colorDepth == 1 ? 8 : 4;
+ 
+                uint32_t tileStartAddress = tileDataBase + tileNumber*bytesPerTile;
+                uint32_t rowStartAddress = tileStartAddress + (vFlip ? (7-pixelRow) : pixelRow)*bytesPerPixelRow;
 
-                    /* 8 bytes per row, 1 byte per pixel */
-                    for (int j=0; j<8; j++) {
-                        uint8_t pixelPalette = busRead(gba, rowStartAddress+j, WIDTH_8);
-                        uint16_t rgb = readPaletteRAM(gba, pixelPalette);
-                        uint8_t x = i*8 + (hFlip ? 7-j : j);
+                /* 8/4 bytes per row, 1 byte / 1 nibble per pixel based on 8bit/4bit colour depth */
+                for (int j=0; j<8; j++) {
+                    uint16_t rgb = 0;
 
-                        gba->framebuffer[y*WIDTH_PX+x] = rgb;
+                    /* Load pixel colour rgb555 based on colour depth and indexing mode */
+                    if (colorDepth == 1) {
+                        /* 8 bit colour depth - 256/1 palette - 64 bytes/tile */
+                        uint16_t pixelPalette = busRead(gba, rowStartAddress+j, WIDTH_8);
+                        rgb = readPaletteRAM(gba, pixelPalette);
+                    } else {
+                        /* 4 bit colour depth - 16/16 palette - 32 bytes/tile */
+                        uint8_t paletteByte = busRead(gba, rowStartAddress+((j&(~1))/2), WIDTH_8);
+                        uint16_t pixelPalette = j&1 ? paletteByte >> 4 : paletteByte & 0xF;
+                        rgb = readPaletteRAM(gba, paletteNum*16+pixelPalette);
                     }
-                } else {
-                    /* 4 bit colour depth - 16/16 
-                     * 32 bytes / tile */
-                    uint32_t tileStartAddress = tileDataBase + tileNumber*32;
-                    uint32_t rowStartAddress = tileStartAddress + (vFlip ? (7-pixelRow) : pixelRow)*4;
 
-                    for (int j=0; j<4; j++) {
-                        uint8_t paletteData = busRead(gba, rowStartAddress+j, WIDTH_8);
-                        uint8_t paletteLeft = paletteData & 0xF;
-                        uint8_t paletteRight = paletteData >> 4;
+                    /* Offset by startPixel for every tile for framebuffer loading */
+                    uint8_t xReal = (i-startTile)*8 + (hFlip ? (7-j) : j) - startPixel;
 
-                        uint8_t xL = i*8 + (hFlip ? 7-j*2 : j-2);
-                        uint8_t xR = xL+(hFlip ? -1 : +1);
-                        uint16_t rgbL = readPaletteRAM(gba, paletteNum*16+paletteLeft);
-                        uint16_t rgbR = readPaletteRAM(gba, paletteNum*16+paletteRight);
+                    /* Make sure hFlip is handled correctly with horizontal scrolling
+                     * on the first tile. We skip some iterations either at the start or end
+                     * depending on whether we do hFlip or not */
+                    if (i==startTile && startPixel > 0) {
+                        if (hFlip) {
+                            if (j< (8-startPixel)) continue;
+                        } else {
+                            if (j < startPixel) continue;
+                        }
+                    }
 
-                        gba->framebuffer[y*WIDTH_PX+xL] = rgbL;
-                        gba->framebuffer[y*WIDTH_PX+xR] = rgbR;
+                    gba->framebuffer[yReal*WIDTH_PX+xReal] = rgb;
+
+                    /* No need to render the last tile fully if horizontal scrolling % 8 != 0,
+                        * stop when the buffer is full */
+                    if (xReal == WIDTH_PX-1) {
+                        flag = false;
+                        break;
+                    }
+                }
+
+                i++;
+                if (i > 0x1F) {
+                    /* Wrap around itself or extend to SC1/SC3 depending on screen size 
+                     * (modulo by 32) */
+                    i &= 0x1F;
+
+                    switch (screenSize) {
+                        case BG_TEXT_512_256:
+                            /* Swap adjacent quadrants */
+                            if (mapDataBase == screen0Base) mapDataBase = screen1Base;
+                            else mapDataBase = screen0Base;
+                            break;
+                        case BG_TEXT_512_512: {
+                            /* Swap adjacent quadrants 
+                             * Could be upper 2 or lower 2 depending on Y's scroll state */
+                            if (mapDataBase == screen2Base) {
+                                mapDataBase = screen3Base;
+                            } else if (mapDataBase == screen3Base) {
+                                mapDataBase = screen2Base;
+                            } else if (mapDataBase == screen0Base) {
+                                mapDataBase = screen1Base;
+                            } else if (mapDataBase == screen1Base) {
+                                mapDataBase = screen0Base;
+                            }
+                            break;
+                        }
                     }
                 }
             }

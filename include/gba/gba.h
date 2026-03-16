@@ -52,14 +52,23 @@ enum {
 };
 
 typedef enum {
-	DISPCNT 	= 0x00000000,
-	GREENSWP 	= 0x00000002,
-	DISPSTAT 	= 0x00000004,
-	VCOUNT 		= 0x00000006,
-	BG0CNT 		= 0x00000008,
-	BG1CNT 		= 0x0000000A,
-	BG2CNT 		= 0x0000000C,
-	BG3CNT 		= 0x0000000E,
+	DISPCNT 	= 0x00,
+	GREENSWP 	= 0x2,
+	DISPSTAT 	= 0x4,
+	VCOUNT 		= 0x6,
+	BG0CNT 		= 0x8,
+	BG1CNT 		= 0xA,
+	BG2CNT 		= 0xC,
+	BG3CNT 		= 0xE,
+
+    BG0HOFS     = 0x10,
+    BG0VOFS     = 0x12,
+    BG1HOFS     = 0x14,
+    BG1VOFS     = 0x16,
+    BG2HOFS     = 0x18,
+    BG2VOFS     = 0x1A,
+    BG3HOFS     = 0x1C,
+    BG3VOFS     = 0x1E,
 
     KEYINPUT    = 0x00000130
 } IO_REG;

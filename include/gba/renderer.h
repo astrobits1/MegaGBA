@@ -18,6 +18,23 @@ typedef enum {
 	BGMODE_5 				// } -------------------
 } PPU_BGMode;
 
+/* Screen Size parameter enums for BGCNT Text Mode and Rotation/Scaling mode */
+
+typedef enum {
+    BG_TEXT_256_256 = 0,
+    BG_TEXT_512_256,
+    BG_TEXT_256_512,
+    BG_TEXT_512_512
+} PPU_BG_TEXT_SIZE;
+
+typedef enum {
+    BG_ROT_SCAL_128_128 = 0,
+    BG_ROT_SCAL_256_256,
+    BG_ROT_SCAL_512_512,
+    BG_ROT_SCAL_1024_1024
+} PPU_BG_ROT_SCAL_SIZE;
+
+
 typedef enum {
 	PPU_HDRAW, 				// } Horizontal State
 	PPU_HBLANK,				// }
