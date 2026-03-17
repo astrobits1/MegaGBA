@@ -21,6 +21,43 @@ static void repeatLoadFramebuffer(GBA* gba, uint16_t rgb, uint16_t* start, uint3
 
 /* ---------------------------------------------------------------------- */
 
+static bool computeBGRotScalScanline(GBA* gba, uint16_t BGCNT, uint16_t linebuffer[]) {
+    /* Extract character data and screen data base addresses 
+     * as well as screen size */
+    uint32_t mapDataBase = VRAM_96KB + (BGCNT >> 8 & 0x1F) * 0x800;
+    uint32_t tileDataBase = VRAM_96KB + (BGCNT >> 2 & 0b11) * 0x4000;
+    uint8_t screenSize = BGCNT >> 14 & 0b11;
+
+    /* 16x16, 32x32, 64x64, 128x128 tile screen size options specified from BGCNT */
+    uint16_t noTilesPerRow = 1 << (5+screenSize);
+    uint8_t y = gba->IO[VCOUNT];
+
+    /* No scrolling, just compute map as is from the top left pixel */
+    for (int i=0; i<30; i++) {
+        uint8_t pixelRow = y&0b111;                  /* 0-7 within tile */
+        uint32_t tileRowsBefore = (y&(~0b111))/8;    /* No. of tile rows before the tile we are on */
+        uint32_t byteOffset = tileRowsBefore*noTilesPerRow;     /* Offset to be applied on mapData base to reach current tile row */
+
+        /* Read tile index (0-255) */
+        uint8_t tileIndex = busRead(gba, mapDataBase + byteOffset + i, WIDTH_8);
+        
+        /* Obtain pixel row base address, where each tile is 64 bytes (8 bit depth),
+         * each pixel row is 8 bytes and each pixel has 1 byte 256/1 palette index */
+        uint32_t pixelRowBase = tileDataBase + tileIndex*64 + pixelRow*8;
+
+        for (int j=0; j<8; j++) {
+            uint8_t pixelPalette = busRead(gba, pixelRowBase + j, WIDTH_8);
+            uint8_t x = i*8 + j;
+
+            uint16_t rgb = readPaletteRAM(gba, pixelPalette);
+
+            linebuffer[y*WIDTH_PX+x] = rgb;
+        }
+    }
+
+    /* No transparency for now */
+    return false;
+}
 
 static bool computeBGTextScanline(GBA* gba, uint16_t BGCNT, uint16_t BGHOFS, uint16_t BGVOFS, uint16_t linebuffer[]) {
     /* This function computes the entire BG Text Mode scanline (VCOUNT) palette data given BGCNT and 
@@ -204,12 +241,6 @@ static bool computeBGTextScanline(GBA* gba, uint16_t BGCNT, uint16_t BGHOFS, uin
     return transparentPixelExists;
 }
 
-static void renderWhiteScanline(GBA* gba) {
-    /* Load a white scanline at current y in framebuffer */
-    uint16_t* start = &gba->framebuffer[gba->IO[VCOUNT]*WIDTH_PX];
-    memset(start, 0xFF, BYTES_PER_Y);
-}
-
 static bool getHighestPriorityBG(GBA* gba, uint8_t* N, bool exclude[]) {
     /* Return highest priority BG layer that is enabled and not excluded
      * Priority goes from 0-3, 3 being the lowest */
@@ -236,18 +267,14 @@ static bool getHighestPriorityBG(GBA* gba, uint8_t* N, bool exclude[]) {
     return true;
 }
 
-static void renderBGMode0Scanline(GBA* gba) {
-    /* BG Mode 0 - Text mode only */
-
-    /* Use one of BG0-3 based on priority */
-
+static void stackBG(GBA* gba, bool exclude[], uint8_t mode[], uint16_t linebuffer[]) {
     uint8_t N = 0;  /* 0-3 */
-    bool exclude[] = {false, false, false, false};
 
     bool found = getHighestPriorityBG(gba, &N, exclude);
     if (!found) {
-        /* No BG layer enabled */
-        renderWhiteScanline(gba);
+        /* No BG layer enabled or available 
+         * Fill linebuffer with white */
+        repeatLoadFramebuffer(gba, (uint16_t)~(1 << 15), linebuffer, 240);
         return;
     }
 
@@ -255,7 +282,6 @@ static void renderBGMode0Scanline(GBA* gba) {
     uint16_t BGHOFS = readIO(gba, BG0HOFS+2*N, WIDTH_16);
     uint16_t BGVOFS = readIO(gba, BG0VOFS+2*N, WIDTH_16);
 
-    uint16_t linebuffer[240];
     bool transparentPixelExists = computeBGTextScanline(gba, BGCNT, BGHOFS, BGVOFS, linebuffer);
 
     /* Transparent pixel exists, resolve by layering till there are no transparent pixels
@@ -274,7 +300,13 @@ static void renderBGMode0Scanline(GBA* gba) {
         BGVOFS = readIO(gba, BG0VOFS+2*N, WIDTH_16);
 
         uint16_t currentlinebuffer[240];
-        computeBGTextScanline(gba, BGCNT, BGHOFS, BGVOFS, currentlinebuffer);
+        if (mode[N] == 1) {
+            /* Text mode */
+            computeBGTextScanline(gba, BGCNT, BGHOFS, BGVOFS, currentlinebuffer);
+        } else {
+            /* Rotation/Scaling mode */
+            computeBGRotScalScanline(gba, BGCNT, linebuffer);
+        }
 
         /* Fill transparent pixels left over from previous compositions */
         for (int x=0; x<240; x++) {
@@ -286,7 +318,16 @@ static void renderBGMode0Scanline(GBA* gba) {
         }
     }
 
-    /* Proceed to rendering the final composite linebuffer.
+}
+
+static void renderWhiteScanline(GBA* gba) {
+    /* Load a white scanline at current y in framebuffer */
+    uint16_t* start = &gba->framebuffer[gba->IO[VCOUNT]*WIDTH_PX];
+    repeatLoadFramebuffer(gba, (uint16_t)~(1 << 15), start, 240);
+}
+
+static void renderLinebuffer(GBA* gba, uint16_t linebuffer[]) {
+    /* Proceed to rendering the final composite BG linebuffer.
      * Transparent pixels are set to first index in first palette.
      * This step will come after sprite layering when its implemented */
 
@@ -298,6 +339,31 @@ static void renderBGMode0Scanline(GBA* gba) {
 
         gba->framebuffer[gba->IO[VCOUNT]*WIDTH_PX+x] = rgb;
     }
+
+}
+
+static void renderBGMode0Scanline(GBA* gba) {
+    /* BG Mode 0 - Text mode only */
+
+    /* Use one of BG0-3 based on priority */
+    
+    bool exclude[] = {false, false, false, false}; /* BG0-3 are supported in mode 0 */
+    uint8_t mode[] = {1, 1, 1, 1};              /* 1=Text mode, 0=Rot/Scaling mode */
+    uint16_t linebuffer[240];
+
+    stackBG(gba, exclude, mode, linebuffer);
+    renderLinebuffer(gba, linebuffer);
+}
+
+static void renderBGMode1Scanline(GBA* gba) {
+    /* BG Mode 1 - Hybrid - BG0-1 Text Mode and BG2 Rot/Scaling mode, BG3 not supported */
+
+    bool exclude[] = {false, false, true, true};
+    uint8_t mode[] = {1, 1, 0, 0};
+    uint16_t linebuffer[240];
+
+    stackBG(gba, exclude, mode, linebuffer);
+    renderLinebuffer(gba, linebuffer);
 }
 
 static void renderBGMode3Scanline(GBA* gba) {
@@ -427,7 +493,9 @@ void stepPPU(GBA* gba) {
                         case BGMODE_0:
                             renderBGMode0Scanline(gba);
                             break;
-                        
+                        case BGMODE_1:
+                            renderBGMode1Scanline(gba);
+                            break;
 						case BGMODE_3: 
 							/* Video/BG mode 3 -> Bitmap */
                             renderBGMode3Scanline(gba);

@@ -679,9 +679,9 @@ static void LDR_STR(struct GBA* gba, uint32_t ins) {
 		}
 
         if (Rd == R15) {
-            /* Preserve world alignment/half word alignment */
-            if (gba->cpu_state == CPU_STATE_ARM) gba->REG[R15] &= ~0b11;
-            else gba->REG[R15] &= ~1;
+            /* Preserve half word alignment always */
+            //if (gba->cpu_state == CPU_STATE_ARM) gba->REG[R15] &= ~0b11;
+            gba->REG[R15] &= ~1;
 
             flushRefillPipeline(gba);
         }
@@ -892,9 +892,9 @@ static void LDM_STM(struct GBA* gba, uint32_t ins) {
                     returnException(gba);
                 }
 
-                /* Preserve world/half word alignment */
-                if (gba->cpu_state == CPU_STATE_ARM) gba->REG[R15] &= ~0b11;
-                else gba->REG[R15] &= ~1;
+                /* Preserve half word alignment */
+                //if (gba->cpu_state == CPU_STATE_ARM) gba->REG[R15] &= ~0b11;
+                gba->REG[R15] &= ~1;
 
 				flushRefillPipeline(gba);
 			}
