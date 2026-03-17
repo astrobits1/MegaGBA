@@ -1697,7 +1697,16 @@ static void switchMode(GBA* gba, CPU_MODE newMode) {
 
 	/* Save SPSR of the current mode if the mode isnt USER/SYSTEM */
 	if (currentMode != CPU_MODE_USER && currentMode != CPU_MODE_SYSTEM) {
-		gba->BANK_SPSR[currentMode] = gba->SPSR;
+        uint8_t index = 0;
+        switch (currentMode) {
+            case CPU_MODE_FIQ: index = 0; break;
+            case CPU_MODE_IRQ: index = 1; break;
+            case CPU_MODE_UND: index = 2; break;
+            case CPU_MODE_ABT: index = 3; break;
+            case CPU_MODE_SVC: index = 4; break;
+            default: break;
+        }
+		gba->BANK_SPSR[index] = gba->SPSR;
 	}
 
 	/* Load the registers of the new mode (only the ones for the mode) */
@@ -1731,7 +1740,16 @@ static void switchMode(GBA* gba, CPU_MODE newMode) {
 
 	/* Load in the SPSR if the new mode isnt USER/SYSTEM */
 	if (newMode != CPU_MODE_USER && newMode != CPU_MODE_SYSTEM) {
-		gba->SPSR = gba->BANK_SPSR[newMode];
+        uint8_t index = 0;
+        switch (newMode) {
+            case CPU_MODE_FIQ: index = 0; break;
+            case CPU_MODE_IRQ: index = 1; break;
+            case CPU_MODE_UND: index = 2; break;
+            case CPU_MODE_ABT: index = 3; break;
+            case CPU_MODE_SVC: index = 4; break;
+            default: break;
+        }
+		gba->SPSR = gba->BANK_SPSR[index];
 	} else {
 		/* SPSR cannot be read in USER/SYSTEM mode, so we initialise it to a garbage value */
 		gba->SPSR = 0xFFFFFFFF;
