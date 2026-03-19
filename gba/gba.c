@@ -229,6 +229,13 @@ static inline void littleEndian16Encode(uint8_t* ptr, uint16_t value) {
 	ptr[1] = (value >> 8) & 0xFF;
 }
 
+/* busRead and busWrite are not completely fullproof, you could for example
+ * read from write only memory or write to read only memory if you positioned a 16/32bit read/write
+ * at the right place. Only first addresses are checked.To prevent this a more thorough 
+ * checking is needed which resolves every byte individually
+ *
+ * Open bus is yet to be emulated */
+
 uint32_t busRead(GBA* gba, uint32_t address, uint8_t size) {
     uint8_t* ptr = NULL;
 
@@ -274,7 +281,10 @@ uint32_t busRead(GBA* gba, uint32_t address, uint8_t size) {
 		/* Read from IO register */
 		ptr = &gba->IO[address - IO_REG_1KB];
 
+        /* Handle read only */
         if ((address - IO_REG_1KB) >= BG0HOFS && (address - IO_REG_1KB) <= BG3VOFS) {
+            return 0;
+        } else if ((address - IO_REG_1KB) >= BG2PA && (address - IO_REG_1KB) <= BG3Y_H+1) {
             return 0;
         }
 	} else if (address >= PALETTE_RAM_1KB && address <= PALETTE_RAM_1KB_END) {

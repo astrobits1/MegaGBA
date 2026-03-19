@@ -70,6 +70,26 @@ typedef enum {
     BG3HOFS     = 0x1C,
     BG3VOFS     = 0x1E,
 
+    BG2PA       = 0x20,
+    BG2PB       = 0x22,
+    BG2PC       = 0x24,
+    BG2PD       = 0x26,
+
+    BG2X_L      = 0x28,
+    BG2X_H      = 0x2A,
+    BG2Y_L      = 0x2C,
+    BG2Y_H      = 0x2E,
+
+    BG3PA       = 0x30,
+    BG3PB       = 0x32,
+    BG3PC       = 0x34,
+    BG3PD       = 0x36,
+
+    BG3X_L      = 0x38,
+    BG3X_H      = 0x3A,
+    BG3Y_L      = 0x3C,
+    BG3Y_H      = 0x3E,
+
     KEYINPUT    = 0x00000130
 } IO_REG;
 
