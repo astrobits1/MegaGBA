@@ -1,5 +1,6 @@
 #ifndef gba_renderer_h
 #define gba_renderer_h
+#include <stdint.h>
 
 #define HEIGHT_PX 160
 #define WIDTH_PX 240
@@ -47,4 +48,5 @@ void initialisePPU(GBA* gba);
 /* Step the PPU State */
 void stepPPU(GBA* gba);
 
+void updateInternalBGNXY(GBA* gba, uint8_t N);
 #endif

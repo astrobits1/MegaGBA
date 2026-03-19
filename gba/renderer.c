@@ -21,23 +21,54 @@ static void repeatLoadFramebuffer(GBA* gba, uint16_t rgb, uint16_t* start, uint3
 
 /* ---------------------------------------------------------------------- */
 
-static bool computeBGRotScalScanline(GBA* gba, uint8_t N, uint16_t linebuffer[]) {
+static uint16_t getAffinePalette_M1_M2(GBA* gba, uint32_t mapDataBase, uint32_t tileDataBase, int32_t x_i, int32_t y_i, uint16_t noTilesPerRow) {
+    uint8_t pixelRow = y_i&0b111;                  /* 0-7 within tile */
+    uint32_t tileRowsBefore = (y_i&(~0b111))/8;    /* No. of tile rows before the tile we are on */
+    uint32_t byteOffset = tileRowsBefore*noTilesPerRow;     /* Offset to be applied on mapData base to reach current tile row */
+
+    uint8_t tile = (x_i&(~0b111))/8;              /* Current tile in row */
+    uint8_t pixel = x_i&0b111;                    /* Current pixel in tile */
+    /* Read tile index (0-255) */
+    uint8_t tileIndex = busRead(gba, mapDataBase + byteOffset + tile, WIDTH_8);
+    
+    /* Obtain pixel row base address, where each tile is 64 bytes (8 bit depth),
+     * each pixel row is 8 bytes and each pixel has 1 byte 256/1 palette index */
+    uint32_t pixelRowBase = tileDataBase + tileIndex*64 + pixelRow*8;
+    uint8_t pixelPalette = busRead(gba, pixelRowBase + pixel, WIDTH_8);
+    uint16_t rgb = readPaletteRAM(gba, pixelPalette);
+
+    if (pixelPalette == 0) rgb |= 1 << 15;
+    return rgb;
+}
+
+/* Bitmap modes dont have such a thing as transparent palettes */
+static uint16_t getAffinePalette_M3(GBA* gba, uint32_t _, uint32_t __, int32_t x_i, int32_t y_i, uint16_t noTilesPerRow) {
+    uint32_t address = 480*y_i+2*x_i;
+	uint16_t rgb = gba->VRAM[address] | (gba->VRAM[address+1] << 8);
+
+    return rgb;
+}
+
+static uint16_t getAffinePalette_M4(GBA* gba, uint32_t mapDataBase, uint32_t _, int32_t x_i, int32_t y_i, uint16_t noTilesPerRow) {
+
+	uint8_t index = gba->VRAM[mapDataBase + 240*y_i + x_i];
+    uint16_t rgb = readPaletteRAM(gba, index);
+
+    return rgb;
+}
+
+static uint16_t getAffinePalette_M5(GBA* gba, uint32_t mapDataBase, uint32_t _, int32_t x_i, int32_t y_i, uint16_t noTilesPerRow) {
+    uint32_t address = mapDataBase+320*y_i+2*x_i;
+    uint16_t rgb = gba->VRAM[address] | (gba->VRAM[address+1] << 8);	
+
+    return rgb;
+}
+
+static bool computeBGRotScalScanline(GBA* gba, uint8_t N, uint16_t linebuffer[], uint32_t mapDataBase, uint32_t tileDataBase, uint16_t noTilesPerRow, uint16_t noTilesPerCol, uint8_t displayOverflow, uint16_t (*getAffinePalette)(GBA*, uint32_t, uint32_t, int32_t, int32_t, uint16_t)){
     /* Extract BG registers from layer no. (N) */
-    uint16_t BGCNT = readIO(gba, BG0CNT+2*N, WIDTH_16);
-
-    /* Convert 28 bit signed fixed point to 32 bit signed fixed point (32.8) */
-    uint32_t uBGX = readIO(gba, (N&1) ? BG3X_L : BG2X_L, WIDTH_32);
-    uint32_t uBGY = readIO(gba, (N&1) ? BG3Y_L : BG2Y_L, WIDTH_32);
-
-    /* Sign extend */
-    if (uBGX >> 27 & 1) uBGX |= (0xF<<28);
-    else uBGX &= ~(0xF<<28);
-
-    if (uBGY >> 27 & 1) uBGY |= (0xF<<28);
-    else uBGY &= ~(0xF<<28);
-
-    int32_t BGX = (int32_t)uBGX;
-    int32_t BGY = (int32_t)uBGY;
+ 
+    int32_t BGX = N&1 ? gba->internalBG3X : gba->internalBG2X;
+    int32_t BGY = N&1 ? gba->internalBG3Y : gba->internalBG2Y;
 
     /* BGPx are already exact 16 bit signed fixed point (16.8) */
     uint8_t base = (N&1) ? BG3PA : BG2PA;
@@ -46,18 +77,7 @@ static bool computeBGRotScalScanline(GBA* gba, uint8_t N, uint16_t linebuffer[])
     int16_t BGPC = (int16_t)(readIO(gba, base+4, WIDTH_16));
     int16_t BGPD = (int16_t)(readIO(gba, base+6, WIDTH_16));
 
-    //printf("BGX: %d|BGY: %d|dx: %d|dmx: %d|dy: %d|dmy: %d\n", BGX>>8, BGY>>8, BGPA>>8, BGPB>>8, BGPC>>8, BGPD>>8);
-
-    /* Extract character data and screen data base addresses 
-     * as well as screen size */
-    uint32_t mapDataBase = VRAM_96KB + (BGCNT >> 8 & 0x1F) * 0x800;
-    uint32_t tileDataBase = VRAM_96KB + (BGCNT >> 2 & 0b11) * 0x4000;
-    uint8_t screenSize = BGCNT >> 14 & 0b11;
-    uint8_t displayOverflow = BGCNT >> 13 & 1;
-
-    /* 16x16, 32x32, 64x64, 128x128 tile screen size options specified from BGCNT */
-    uint16_t noTilesPerRow = 1 << (4+screenSize);
-    uint16_t noTilesPerCol = noTilesPerRow;
+    //printf("x: %d|y: %d|dx: %d|dmx: %d|dy: %d|dmy: %d|nR: %d\n", BGX>>8, BGY>>8, BGPA>>8, BGPB>>8, BGPC>>8, BGPD>>8, noTilesPerRow);
 
     bool transparentPixelExists = false;
     bool transparentPixel = false;
@@ -78,33 +98,20 @@ static bool computeBGRotScalScanline(GBA* gba, uint8_t N, uint16_t linebuffer[])
         if (x_i >= noTilesPerRow*8 || x_i < 0) {
             if (displayOverflow == 0) transparentPixel = true;
                 /* Wrap it, in both + and - case it gets set to start/end */
-            else x_i&=(1<<(7+screenSize))-1;
+            else x_i&=noTilesPerRow*8 - 1;
         } else transparentPixel = false;
 
         /* Do the same thing for y */
         if (y_i >= noTilesPerCol*8 || y_i < 0) {
             if (displayOverflow == 0) transparentPixel = true;
-            else y_i&=(1<<(7+screenSize))-1;
+            else y_i&=noTilesPerCol*8 - 1;
         }
 
         if (!transparentPixel) {
-            uint8_t pixelRow = y_i&0b111;                  /* 0-7 within tile */
-            uint32_t tileRowsBefore = (y_i&(~0b111))/8;    /* No. of tile rows before the tile we are on */
-            uint32_t byteOffset = tileRowsBefore*noTilesPerRow;     /* Offset to be applied on mapData base to reach current tile row */
-
-            uint8_t tile = (x_i&(~0b111))/8;              /* Current tile in row */
-            uint8_t pixel = x_i&0b111;                    /* Current pixel in tile */
-            /* Read tile index (0-255) */
-            uint8_t tileIndex = busRead(gba, mapDataBase + byteOffset + tile, WIDTH_8);
-            
-            /* Obtain pixel row base address, where each tile is 64 bytes (8 bit depth),
-             * each pixel row is 8 bytes and each pixel has 1 byte 256/1 palette index */
-            uint32_t pixelRowBase = tileDataBase + tileIndex*64 + pixelRow*8;
-            uint8_t pixelPalette = busRead(gba, pixelRowBase + pixel, WIDTH_8);
-            uint16_t rgb = readPaletteRAM(gba, pixelPalette);
+            uint16_t rgb = getAffinePalette(gba, mapDataBase, tileDataBase, x_i, y_i, noTilesPerRow);
 
             /* Transparent from palette */
-            if (pixelPalette == 0) transparentPixelExists = true;
+            if (rgb >> 15 & 1) transparentPixelExists = true;
             linebuffer[xReal] = rgb;
         } else {
             /* Transparent pixel */
@@ -115,7 +122,8 @@ static bool computeBGRotScalScanline(GBA* gba, uint8_t N, uint16_t linebuffer[])
         // dx
         x = (x_i << 8) | (x&0xFF);
         x += BGPA;
-        // dmy
+
+        // dmx
         y = (y_i << 8) | (y&0xFF);
         y += BGPB;
     }
@@ -129,12 +137,37 @@ static bool computeBGRotScalScanline(GBA* gba, uint8_t N, uint16_t linebuffer[])
     // dmy
     y += BGPD;
 
-    /* Update scroll registers with new dy and dmy increments, for next scanline */
-    writeIO(gba, (N&1)?BG3X_L:BG2X_L, (uint32_t)x, WIDTH_32);
-    writeIO(gba, (N&1)?BG3Y_L:BG2Y_L, (uint32_t)y, WIDTH_32);
+    /* Update internal scroll registers with new dy and dmy increments, for next scanline
+     * Hardware register value is still unchanged and will overwrite the internal register
+     * at every write to it and at the end of VBLANK */
+    if (N&1) {
+        gba->internalBG3X = x;
+        gba->internalBG3Y = y;
+    } else {
+        gba->internalBG2X = x;
+        gba->internalBG2Y = y;
+    }
 
     return transparentPixelExists;
 }
+
+static bool computeBGRotScalScanline_M1_M2(GBA* gba, uint8_t N, uint16_t linebuffer[]) {
+    uint16_t BGCNT = readIO(gba, BG0CNT+2*N, WIDTH_16);
+    /* Extract character data and screen data base addresses 
+     * as well as screen size */
+    uint32_t mapDataBase = VRAM_96KB + (BGCNT >> 8 & 0x1F) * 0x800;
+    uint32_t tileDataBase = VRAM_96KB + (BGCNT >> 2 & 0b11) * 0x4000;
+    uint8_t screenSize = BGCNT >> 14 & 0b11;
+    uint8_t displayOverflow = BGCNT >> 13 & 1;
+
+    /* 16x16, 32x32, 64x64, 128x128 tile screen size options specified from BGCNT */
+    uint16_t noTilesPerRow = 1 << (4+screenSize);
+    uint16_t noTilesPerCol = noTilesPerRow;
+
+    return computeBGRotScalScanline(gba, N, linebuffer, mapDataBase, tileDataBase, noTilesPerRow, noTilesPerCol, displayOverflow, getAffinePalette_M1_M2);
+}
+
+
 
 static bool computeBGTextScanline(GBA* gba, uint8_t N, uint16_t linebuffer[]) {
     /* This function computes the entire BG Text Mode scanline (VCOUNT) palette data given layer no.
@@ -350,6 +383,8 @@ static bool getHighestPriorityBG(GBA* gba, uint8_t* N, bool exclude[]) {
     return true;
 }
 
+/* BG Stacking is done for BG Modes 0-2, for bitmap modes stacking is not needed as only BG2 is used */
+
 static void stackBG(GBA* gba, bool exclude[], uint8_t mode[], uint16_t linebuffer[]) {
     uint8_t N = 0;  /* 0-3 */
 
@@ -366,7 +401,7 @@ static void stackBG(GBA* gba, bool exclude[], uint8_t mode[], uint16_t linebuffe
     if (mode[N] == 1) {
         transparentPixelExists = computeBGTextScanline(gba, N, linebuffer);
     } else {
-        transparentPixelExists = computeBGRotScalScanline(gba, N, linebuffer);
+        transparentPixelExists = computeBGRotScalScanline_M1_M2(gba, N, linebuffer);
     }
 
     /* Transparent pixel exists, resolve by layering till there are no transparent pixels
@@ -386,7 +421,7 @@ static void stackBG(GBA* gba, bool exclude[], uint8_t mode[], uint16_t linebuffe
             computeBGTextScanline(gba, N, currentlinebuffer);
         } else {
             /* Rotation/Scaling mode */
-            computeBGRotScalScanline(gba, N, currentlinebuffer);
+            computeBGRotScalScanline_M1_M2(gba, N, currentlinebuffer);
         }
 
         /* Fill transparent pixels left over from previous compositions */
@@ -464,7 +499,11 @@ static void renderBGMode3Scanline(GBA* gba) {
 	/* Mode 3 is a simple bitmap mode with only 1 frame/screen and the pixel data 
 	 * along with colors are stored directly in VRAM from 0x06000000-0x06012BFF 
 	 * Each pixel occupies 2 bytes of data (16 bit color), thus first 480 bytes define 
-	 * the first scanline, and so on for every scanline */
+	 * the first scanline, and so on for every scanline 
+     *
+     * It also supports Rotation/Scaling mode through BG2
+     * displayOverflow = 0 always, i.e when scroll goes beyond map we render transparent
+     * pixels */
 
     /* BG2 should be enabled */
     if ((gba->latchedDISPCNT >> 10 & 1) == 0) {
@@ -472,14 +511,10 @@ static void renderBGMode3Scanline(GBA* gba) {
         return;
     }
 
-	uint8_t y = gba->IO[VCOUNT];
+    uint16_t linebuffer[240];
 
-	for (int x = 0; x < 240; x++) { 			/* 240 Pixels */
-		uint32_t address = 480*y+2*x;
-		uint16_t rgb = gba->VRAM[address] | (gba->VRAM[address+1] << 8);
-
-        gba->framebuffer[y*WIDTH_PX+x] = rgb;
-	}
+    computeBGRotScalScanline(gba, 2, linebuffer, 0, 0, 30, 20, 0, getAffinePalette_M3); 
+    renderLinebuffer(gba, linebuffer); 
 }
 
 static void renderBGMode4Scanline(GBA* gba) {
@@ -499,15 +534,10 @@ static void renderBGMode4Scanline(GBA* gba) {
     }
 
 	uint32_t base = (gba->latchedDISPCNT >> 4 & 1) ? 0xA000 : 0x0000;
-	uint8_t y = gba->IO[VCOUNT];
+    uint16_t linebuffer[240];
 
-	for (int x = 0; x < 240; x++) {
-		/* BG Palette RAM */
-		uint8_t index = gba->VRAM[base + 240*y + x];
-		uint16_t rgb = readPaletteRAM(gba, index);
-
-        gba->framebuffer[y*WIDTH_PX+x] = rgb; 
-	}
+    computeBGRotScalScanline(gba, 2, linebuffer, base, 0, 30, 20, 0, getAffinePalette_M4);
+    renderLinebuffer(gba, linebuffer);
 }
 
 static void renderBGMode5Scanline(GBA* gba) {
@@ -522,35 +552,46 @@ static void renderBGMode5Scanline(GBA* gba) {
     }
 
 	uint32_t base = (gba->latchedDISPCNT >> 4 & 1) ? 0xA000 : 0x0000;
-	uint8_t y = gba->IO[VCOUNT];
+    uint16_t linebuffer[240];
 
-    if (y < 128) {
-	    for (int x = 0; x < 160; x++) {
-		    /* BG Palette RAM */
-            uint32_t address = 320*y+2*x;
-            uint16_t rgb = gba->VRAM[address] | (gba->VRAM[address+1] << 8);	
 
-		    gba->framebuffer[y*WIDTH_PX+x] = rgb;  
-	    }
-    }
-
-    /* For the background, use the first colour entry in the palette 
-     * (This is not the exact behaviour, which has to do with affine and this 
-     * part is subject to change) */
-
-    uint16_t rgb = gba->PaletteRAM[0] | (gba->PaletteRAM[1] << 8);
-
-    for (int i= y>=128 ? 0 : 160; i<240; i++) {
-        gba->framebuffer[y*WIDTH_PX+i] = rgb;
-    }
+    //printf("yR: %d|BGX: %d|BGY: %d\n", gba->IO[VCOUNT], gba->internalBG2X >> 8, gba->internalBG2Y >> 8);
+    computeBGRotScalScanline(gba, 2, linebuffer, base, 0, 20, 16, 0, getAffinePalette_M5);
+    renderLinebuffer(gba, linebuffer);
 }
 
 /* ------------------------------------------------------------------------------- */
 
+void updateInternalBGNXY(GBA* gba, uint8_t N) {
+    /* Update internal BGX and BGY affine counters for BG2 or BG3 from IO */
+
+    uint32_t uBGX = readIO(gba, (N&1) ? BG3X_L : BG2X_L, WIDTH_32);
+    uint32_t uBGY = readIO(gba, (N&1) ? BG3Y_L : BG2Y_L, WIDTH_32);
+
+    /* Sign extend */
+    if (uBGX >> 27 & 1) uBGX |= (0xF<<28);
+    else uBGX &= ~(0xF<<28);
+
+    if (uBGY >> 27 & 1) uBGY |= (0xF<<28);
+    else uBGY &= ~(0xF<<28);
+
+    if (N&1) {
+        gba->internalBG3X = (int32_t)uBGX;
+        gba->internalBG3Y = (int32_t)uBGX;
+    } else {
+        gba->internalBG2X = (int32_t)uBGX;
+        gba->internalBG2Y = (int32_t)uBGY;
+    }
+}
 
 void initialisePPU(GBA* gba) {
 	gba->ppuHState = PPU_HDRAW;
 	gba->ppuVState = PPU_VDRAW;
+
+    gba->internalBG2X = 0;
+    gba->internalBG2Y = 0;
+    gba->internalBG3X = 0;
+    gba->internalBG3Y = 0;
 
     /* Initialise framebuffer to full white */
     memset(&gba->framebuffer, 0xFF, WIDTH_PX*HEIGHT_PX*sizeof(uint16_t));
@@ -668,6 +709,11 @@ void stepPPU(GBA* gba) {
 					/* End of VBLANK */
 					gba->IO[VCOUNT] = 0;
 					gba->ppuVState = PPU_VDRAW;
+
+                    /* Update internal BGNXY reference point registers,
+                     * which do so at the end of every VBLANK for BG2 and BG3 */
+                    updateInternalBGNXY(gba, 2);
+                    updateInternalBGNXY(gba, 3);
 
 					latchDISPCNT(gba);
 				} else if (gba->IO[VCOUNT] == 227) {

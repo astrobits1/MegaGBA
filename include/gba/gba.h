@@ -130,6 +130,10 @@ struct GBA {
 	/* ----------------- Renderer ---------------- */
     uint16_t framebuffer[WIDTH_PX*HEIGHT_PX];       /* Framebuffer used with sdl textures for rendering */
     uint16_t latchedDISPCNT;
+    int32_t internalBG2X;
+    int32_t internalBG2Y;
+    int32_t internalBG3X;
+    int32_t internalBG3Y;
 	
 	uint8_t ppuVState; 					// Current Vertical State of PPU
 	uint8_t ppuHState; 					// Current Horizontal State of PPU

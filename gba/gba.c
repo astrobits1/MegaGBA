@@ -95,6 +95,13 @@ static void initialiseIO(GBA* gba) {
     /* PPU */
     /* DISCNT, DISPSTAT, VCOUNT, BGNCNT are all 0 */
 
+    /* Initialise affine matrix to identity, so even if they are not used
+     * things render normally */
+    writeIO(gba, BG2PA, 1 << 8, WIDTH_16);
+    writeIO(gba, BG3PA, 1 << 8, WIDTH_16);
+    writeIO(gba, BG2PD, 1 << 8, WIDTH_16);
+    writeIO(gba, BG3PD, 1 << 8, WIDTH_16);
+
     /* Keypad */
 
     /* KEYINPUT - Set all key states to released */
@@ -302,55 +309,7 @@ uint32_t busRead(GBA* gba, uint32_t address, uint8_t size) {
 	}
 }
 
-void busWrite(GBA* gba, uint32_t address, uint32_t data, uint8_t size) {
-    uint8_t* ptr = NULL;
-
-	if (address >= INT_WRAM_32KB && address <= INT_WRAM_32KB_END) {
-		/* Write to internal workram with current size and little endian formatting */
-		ptr = &gba->IWRAM[address - INT_WRAM_32KB];
-	} else if (address >= EXT_WRAM_256KB && address <= EXT_WRAM_256KB_END) {
-		ptr = &gba->EWRAM[address - EXT_WRAM_256KB];
-	} else if (address >= VRAM_96KB && address <= VRAM_96KB_END) {
-		ptr = &gba->VRAM[address - VRAM_96KB];
-
-		/* VRAM only supports 16 and 32 bit writes, writing a byte to the addressed
-		 * halfword is going to mirror it to both upper and lower byte */
-		if (size == WIDTH_8) {
-			/* Halfword aligned */
-			ptr = &gba->VRAM[(address & ~1) - VRAM_96KB];
-            data = (data << 8) | data;
-            size = WIDTH_16;
-		}
-	} else if (address >= IO_REG_1KB && address <= IO_REG_1KB_END) {
-		ptr = &gba->IO[address - IO_REG_1KB];
-
-		/* Check for read-only registers, and prevent a write */
-		switch (address - IO_REG_1KB) {
-			case VCOUNT: return;
-			case DISPSTAT: {
-				/* Handle read only bits */
-				uint8_t current = *ptr;
-				/* V-Blank, H-Blank and V-Counter flags are read only */
-				data &= ~0b111;
-				data |= current & 0b111;
-				break;
-			}
-		}
-	} else if (address >= PALETTE_RAM_1KB && address <= PALETTE_RAM_1KB_END) {
-		ptr = &gba->PaletteRAM[address - PALETTE_RAM_1KB];
-
-		/* Palette RAM only supports 16 and 32 bit writes, writing a byte to the addressed
-		 * halfword is going to mirror it to both upper and lower byte */
-		if (size == WIDTH_8) {
-			/* Halfword aligned */
-			ptr = &gba->PaletteRAM[(address & ~1) - PALETTE_RAM_1KB];
-            data = (data << 8) | data;
-            size = WIDTH_16;
-		}
-	}
-
-    if (ptr == NULL) return;
-
+static void writeMem(GBA* gba, uint8_t* ptr, uint32_t data, uint8_t size) {
     switch (size) {
 		case WIDTH_32: {
 #if defined(DEBUG_ENABLED) && defined(DEBUG_LOG_MEM)
@@ -374,6 +333,67 @@ void busWrite(GBA* gba, uint32_t address, uint32_t data, uint8_t size) {
             return;
         }
 	}
+
+}
+
+void busWrite(GBA* gba, uint32_t address, uint32_t data, uint8_t size) {
+    uint8_t* ptr = NULL;
+
+	if (address >= INT_WRAM_32KB && address <= INT_WRAM_32KB_END) {
+		/* Write to internal workram with current size and little endian formatting */
+		ptr = &gba->IWRAM[address - INT_WRAM_32KB];
+	} else if (address >= EXT_WRAM_256KB && address <= EXT_WRAM_256KB_END) {
+		ptr = &gba->EWRAM[address - EXT_WRAM_256KB];
+	} else if (address >= VRAM_96KB && address <= VRAM_96KB_END) {
+		ptr = &gba->VRAM[address - VRAM_96KB];
+
+		/* VRAM only supports 16 and 32 bit writes, writing a byte to the addressed
+		 * halfword is going to mirror it to both upper and lower byte */
+		if (size == WIDTH_8) {
+			/* Halfword aligned */
+			ptr = &gba->VRAM[(address & ~1) - VRAM_96KB];
+            data = (data << 8) | data;
+            size = WIDTH_16;
+		}
+	} else if (address >= IO_REG_1KB && address <= IO_REG_1KB_END) {
+        uint32_t ioaddr = address - IO_REG_1KB;
+		ptr = &gba->IO[ioaddr];
+		/* Check for read-only registers, and prevent a write */
+		switch (ioaddr) {
+			case VCOUNT: return;
+			case DISPSTAT: {
+				/* Handle read only bits */
+				uint8_t current = *ptr;
+				/* V-Blank, H-Blank and V-Counter flags are read only */
+				data &= ~0b111;
+				data |= current & 0b111;
+				break;
+			}
+		}
+
+        /* Update internal registers on every write for BGNXY */
+        if (ioaddr >= BG2X_L && ioaddr <= BG2Y_H) {
+            writeMem(gba, ptr, data, size);
+            updateInternalBGNXY(gba, 2);
+        } else if (ioaddr >= BG3X_L && ioaddr <= BG3Y_H) {
+            writeMem(gba, ptr, data, size);
+            updateInternalBGNXY(gba, 3);
+        }
+	} else if (address >= PALETTE_RAM_1KB && address <= PALETTE_RAM_1KB_END) {
+		ptr = &gba->PaletteRAM[address - PALETTE_RAM_1KB];
+
+		/* Palette RAM only supports 16 and 32 bit writes, writing a byte to the addressed
+		 * halfword is going to mirror it to both upper and lower byte */
+		if (size == WIDTH_8) {
+			/* Halfword aligned */
+			ptr = &gba->PaletteRAM[(address & ~1) - PALETTE_RAM_1KB];
+            data = (data << 8) | data;
+            size = WIDTH_16;
+		}
+	}
+
+    if (ptr == NULL) return;
+    writeMem(gba, ptr, data, size);
 }
 
 /* ------------- IO Read/Write -------------- */
