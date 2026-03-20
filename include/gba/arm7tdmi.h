@@ -28,6 +28,22 @@ typedef enum {
     CPU_EXCEP_COUNT = 4
 } CPU_EXCEP;                                /* High number = higher priority */
 
+typedef enum {                  /* IRQ in bit order corresponding to IE & IF */
+    IRQ_LCD_VBLANK,
+    IRQ_LCD_HBLANK,
+    IRQ_LCD_VCOUNTER,
+    IRQ_TIMER1_OVF,
+    IRQ_TIMER2_OVF,
+    IRQ_TIMER3_OVF,
+    IRQ_SERIAL,
+    IRQ_DMA0,
+    IRQ_DMA1,
+    IRQ_DMA2,
+    IRQ_DMA3,
+    IRQ_KEYPAD,
+    IRQ_EXTERNAL
+} IRQ;
+
 typedef enum {
 	CPU_STATE_ARM,	 			/* 32 bit ARM */
 	CPU_STATE_THUMB 			/* 16 bit THUMB */
@@ -61,6 +77,8 @@ enum { 							/* Helpful register abbreviations */
 
 void initialiseCPU(GBA* gba);
 void stepCPU(GBA* gba);
+
+void requestInterrupt(GBA* gba, IRQ irq);
 
 /* Helpers */
 uint32_t twosComplementOffset(uint32_t base, uint32_t offset, uint8_t signBit);

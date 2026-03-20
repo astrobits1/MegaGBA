@@ -90,7 +90,11 @@ typedef enum {
     BG3Y_L      = 0x3C,
     BG3Y_H      = 0x3E,
 
-    KEYINPUT    = 0x00000130
+    KEYINPUT    = 0x130,
+
+    IE          = 0x200,
+    IF          = 0x202,
+    IME         = 0x208
 } IO_REG;
 
 struct GBA {

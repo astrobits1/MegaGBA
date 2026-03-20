@@ -612,13 +612,7 @@ void stepPPU(GBA* gba) {
 
 	switch (gba->ppuVState) {
 		case PPU_VDRAW: {
-			if (gba->ppuHState == PPU_HDRAW) {
-				/* Check for V-Count match in DISPSTAT */
-				uint8_t vmatch = STAT >> 8;
-				if (vmatch == gba->IO[VCOUNT]) {
-					writeIO(gba, DISPSTAT, STAT | 0b100, WIDTH_16);
-				} else writeIO(gba, DISPSTAT, STAT & ~0b100, WIDTH_16);
-
+			if (gba->ppuHState == PPU_HDRAW) {	
 				/* CPU has finished running through HDRAW, now render the entire scanline
 				 * using latched DISPCNT values */
 				if (gba->latchedDISPCNT >> 7 & 1) {
@@ -658,6 +652,9 @@ void stepPPU(GBA* gba) {
 				/* Switch to HBLANK - TODO HBLANK flag is set late */
 				gba->IO[DISPSTAT] |= 0b10;
 				gba->ppuHState = PPU_HBLANK;
+
+                /* Reques HBLANK interrupt if enabled */
+                if (STAT >> 4 & 1) requestInterrupt(gba, IRQ_LCD_HBLANK);
 			} else {
 				/* HBLANK
 				 * CPU has finished running through HBLANK, now prepare for the next HDRAW,
@@ -666,11 +663,21 @@ void stepPPU(GBA* gba) {
 				gba->IO[DISPSTAT] &= ~0b10;
 				gba->ppuHState = PPU_HDRAW;
 
+                /* Check for V-Count match in DISPSTAT */
+				uint8_t vmatch = STAT >> 8;
+				if (vmatch == gba->IO[VCOUNT]) {
+					writeIO(gba, DISPSTAT, STAT | 0b100, WIDTH_16);
+                    /* If vcounter IRQ enabled, then request interrupt */
+                    if (STAT >> 5 & 1) requestInterrupt(gba, IRQ_LCD_VCOUNTER);
+				} else writeIO(gba, DISPSTAT, STAT & ~0b100, WIDTH_16);
+
 				if (gba->IO[VCOUNT] == 160) {
 					/* Enter VBLANK and render frame */
 					gba->ppuVState = PPU_VBLANK;
 					/* Set VBLANK STAT flag */
 					gba->IO[DISPSTAT] |= 1;
+                    /* If VBLANK IRQ is enabled then request interrupt */
+                    if (STAT >> 3 & 1) requestInterrupt(gba, IRQ_LCD_VBLANK);
 
 					SDLEvents(gba);
 

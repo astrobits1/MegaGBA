@@ -2195,9 +2195,37 @@ static void checkExceptions(GBA* gba) {
     }
 }
 
-/* ----------------------------------------------------------------- */
+/* ------------------------ Interrupts -------------------------------- */
 
+void requestInterrupt(GBA* gba, IRQ irq) {
+    /* Request an interrupt, this sets the request flag in IF */
+    uint16_t data = readIO(gba, IF, WIDTH_16);
+    data |= 1 << irq;
+    writeIO(gba, IF, data, WIDTH_16);
+}
 
+static void handleInterrupts(GBA* gba) {
+    /* Check for possible interrupts and call for IRQ exception if conditions are satisfied */
+
+    /* Check IME, CPU IRQ enable check is handled by the exception handler */
+    if ((readIO(gba, IME, WIDTH_16) & 1) == 0) return;
+
+    uint16_t IE_data = readIO(gba, IE, WIDTH_16);
+    uint16_t IF_data = readIO(gba, IF, WIDTH_16);
+    /* Check IF and IE */
+    for (int i=0; i<16; i++) {
+        if ((IE_data >> i & 1) && (IF_data >> i & 1)) {
+            /* Atleast one interrupt is enabled and requested
+             * Priorities are handled by the software. 
+             * IF bit is not cleared automatically and requires manual acknowledgement */
+            requestException(gba, CPU_EXCEP_IRQ);
+
+            break;
+        }
+    }
+}
+
+/* -------------------------------------------------------------------- */
 
 void stepCPU(GBA* gba) {
 	/* CPU Pipeline has 3 stages happening simulataneously, Execute/Decode/Fetch
@@ -2218,6 +2246,12 @@ void stepCPU(GBA* gba) {
 	 * the actual address. This means if the address of the next instruction is modified,
 	 * the instruction will still execute as it was prefetched in the queue */
 
+    /* Handle any requested interrupts */
+    handleInterrupts(gba);
+    /* Exceptions are checked for, and pipeline may be flushed and refilled before continuing */
+    checkExceptions(gba);
+    gba->skipFetch = false;         /* Fetch does not follow but rather a read */
+
 	if (gba->cpu_state == CPU_STATE_ARM) {
 #if defined(DEBUG_ENABLED) && defined(DEBUG_TRACE_STATE)
 		uint32_t opcode = readPipeline(gba);
@@ -2226,9 +2260,6 @@ void stepCPU(GBA* gba) {
 #else
 		dispatchARM(gba, readPipeline(gba));
 #endif
-        /* Exceptions are checked for, and pipeline may be flushed and refilled before continuing */
-        checkExceptions(gba);
-
 		if (gba->skipFetch) {gba->skipFetch = false; return;}
 		insertPipeline(gba, readARMOpcode(gba));
 
@@ -2239,8 +2270,7 @@ void stepCPU(GBA* gba) {
 		dispatchTHUMB(gba, opcode);
 #else
 		dispatchTHUMB(gba, readPipeline(gba));
-#endif
-        checkExceptions(gba);
+#endif 
 
 		if (gba->skipFetch) {gba->skipFetch = false; return;}
 		insertPipeline(gba, readTHUMBOpcode(gba));

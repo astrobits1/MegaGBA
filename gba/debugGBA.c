@@ -6,7 +6,6 @@
 #ifdef DEBUG_ENABLED
 
 bool DEBUG_TRACE_FLAG = false;
-
 void (*Dissembler_ARM_LUT[4096])(GBA* gba, uint32_t opcode);
 void (*Dissembler_THUMB_LUT[256])(GBA* gba, uint16_t opcode);
 

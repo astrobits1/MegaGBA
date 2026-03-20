@@ -375,9 +375,16 @@ void busWrite(GBA* gba, uint32_t address, uint32_t data, uint8_t size) {
         if (ioaddr >= BG2X_L && ioaddr <= BG2Y_H) {
             writeMem(gba, ptr, data, size);
             updateInternalBGNXY(gba, 2);
+            return;
         } else if (ioaddr >= BG3X_L && ioaddr <= BG3Y_H) {
             writeMem(gba, ptr, data, size);
             updateInternalBGNXY(gba, 3);
+            return;
+        } else if (ioaddr == IF || ioaddr == IF+1) {
+            /* Intercept write to IF, whatever bits are high in the data for byte (for byte/hw)
+             * will be 'acknowledged' and cleared in IF if they were set */
+            writeIO(gba, ioaddr, readIO(gba, ioaddr, size)&(~data), size);
+            return;
         }
 	} else if (address >= PALETTE_RAM_1KB && address <= PALETTE_RAM_1KB_END) {
 		ptr = &gba->PaletteRAM[address - PALETTE_RAM_1KB];
@@ -416,4 +423,4 @@ void writeIO(GBA* gba, uint32_t address, uint32_t data, uint8_t size) {
 	}
 }
 
-/* -------------------------------- */
+
