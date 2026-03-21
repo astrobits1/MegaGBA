@@ -128,7 +128,7 @@ static bool computeBGRotScalScanline(GBA* gba, uint8_t N, uint16_t linebuffer[],
 
         // dmx
         y = (y_i << 8) | (y&0xFF);
-        y += BGPB;
+        y += BGPC;
     }
 
     /* Reset to initial coordinates */
@@ -136,7 +136,7 @@ static bool computeBGRotScalScanline(GBA* gba, uint8_t N, uint16_t linebuffer[],
     y = BGY;
 
     // dy
-    x += BGPC;
+    x += BGPB;
     // dmy
     y += BGPD;
 
