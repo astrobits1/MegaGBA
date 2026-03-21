@@ -20,12 +20,10 @@ typedef enum {
 } CPU_MODE;
 
 typedef enum {
-    CPU_EXCEP_UNDEFINED = 0,                /* Undefined Instruction exception */
     CPU_EXCEP_SWI,                          /* Software Interrupt */
     CPU_EXCEP_IRQ,                          /* Interrupt Exception */
-    CPU_EXCEP_FIQ,                           /* Fast Interrupt Exception (Not triggered naturally) */
 
-    CPU_EXCEP_COUNT = 4
+    CPU_EXCEP_COUNT
 } CPU_EXCEP;                                /* High number = higher priority */
 
 typedef enum {                  /* IRQ in bit order corresponding to IE & IF */

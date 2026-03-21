@@ -1032,8 +1032,8 @@ static void SWI(struct GBA* gba, uint32_t ins) {
 }
 
 static void Undefined_ARM(struct GBA* gba, uint32_t ins) {
-    /* Triggers the UNDEFINED exception */
-    requestException(gba, CPU_EXCEP_UNDEFINED);
+    /* Doesnt trigger the UNDEFINED exception (for now) */
+    printf("Instruction: %08x is an undefined ARM instruction\n", ins);
 }
 
 static void Unimplemented_ARM(struct GBA* gba, uint32_t ins) {
@@ -1648,8 +1648,8 @@ static void SWI_THUMB(struct GBA* gba, uint16_t ins) {
 }
 
 
-static void Unimplemented_THUMB(struct GBA* gba, uint16_t ins) {
-	printf("Instruction: %04x is an unimplemented THUMB Instruction\n", ins);
+static void Undefined_THUMB(struct GBA* gba, uint16_t ins) {
+	printf("Instruction: %04x is an undefined THUMB Instruction\n", ins);
 }
 
 /* ---------------------------------------------------- */
@@ -1976,7 +1976,7 @@ void initialiseLUT_THUMB(GBA* gba) {
 			/* Move Shifted Register */
 			gba->THUMB_LUT[index] = &LSL_LSR_ASR;
 		} else {
-			gba->THUMB_LUT[index] = &Unimplemented_THUMB;
+			gba->THUMB_LUT[index] = &Undefined_THUMB;
 		}
 	}
 }
@@ -2124,15 +2124,6 @@ static void triggerException(GBA* gba, CPU_EXCEP excep) {
     uint32_t CPSR = gba->CPSR;
 
     switch (excep) {
-        case CPU_EXCEP_FIQ: {
-            /* Address of instruction that was supposed to execute next
-             *      + 4 for ARM and THUMB */
-            retPC = gba->cpu_state == CPU_STATE_ARM ? gba->REG[R15]-4 : gba->REG[R15];
-            vector = 0x1C;
-            switchMode(gba, CPU_MODE_FIQ);
-            CPSR_SetBit(gba, CPSR_FIQ_DIS);
-            break;
-        }
         case CPU_EXCEP_IRQ: {
             /* ''''''''''''' */ 
             retPC = gba->cpu_state == CPU_STATE_ARM ? gba->REG[R15]-4 : gba->REG[R15];
@@ -2149,21 +2140,14 @@ static void triggerException(GBA* gba, CPU_EXCEP excep) {
             switchMode(gba, CPU_MODE_SVC);
             break;
         }
-        case CPU_EXCEP_UNDEFINED: {
-            /* ''''''''''''' */
-            retPC = gba->cpu_state == CPU_STATE_ARM ? gba->REG[R15]-8 : gba->REG[R15]-4;
-            vector = 0x04;
-            switchMode(gba, CPU_MODE_UND);
-            break;
-        }
-
         /* GBA memory does not issue faults, it returns open bus/garbage which means
          * PABORT and DABORT will never naturally occur and its safe to ignore */
         default: break;
     }
 
-    CPSR_SetBit(gba, CPSR_IRQ_DIS);
     gba->SPSR = CPSR;
+    /* Set I after saving CPSR to SPSR */
+    CPSR_SetBit(gba, CPSR_IRQ_DIS);
     /* Switches to ARM mode because bit 0 is 0 */
     branchAndExchange(gba, vector);
     gba->REG[R14] = retPC;
@@ -2174,6 +2158,7 @@ static void returnException(GBA* gba) {
      * triggered, CPSR <- SPSR */
     if (gba->cpu_mode == CPU_MODE_SYSTEM || gba->cpu_mode == CPU_MODE_USER) return;
 
+    /* Restore I to previous value aswell */
     gba->CPSR = gba->SPSR;
     
     /* Do necessary mode and state switch */
@@ -2190,7 +2175,6 @@ static void checkExceptions(GBA* gba) {
             /* Skip IRQ and FIQ requests if they have been disabled in CPSR 
              * They would be handled after the bits are cleared */
             if (i == CPU_EXCEP_IRQ && CPSR_GetBit(gba, CPSR_IRQ_DIS)) continue;
-            if (i == CPU_EXCEP_FIQ && CPSR_GetBit(gba, CPSR_FIQ_DIS)) continue;
 
             /* A suitable exception can be handled now */
             triggerException(gba, i);

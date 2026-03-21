@@ -1,4 +1,5 @@
 *.o
 *.bin
 megagba
-compile_flags.txt
+*.txt
+
