@@ -3,7 +3,7 @@
 #include <SDL2/SDL.h>
 
 static inline void latchDISPCNT(GBA* gba) {
-	uint16_t DISPCNT = readIO(gba, DISPCNT, WIDTH_16);
+	uint16_t DISPCNT = readIO_internal(gba, DISPCNT, WIDTH_16);
     gba->latchedDISPCNT = DISPCNT;
 }
 
@@ -46,6 +46,7 @@ static uint16_t getAffinePalette_M3(GBA* gba, uint32_t _, uint32_t __, int32_t x
     uint32_t address = 480*y_i+2*x_i;
 	uint16_t rgb = gba->VRAM[address] | (gba->VRAM[address+1] << 8);
 
+    rgb &= ~(1<<15);
     return rgb;
 }
 
@@ -54,6 +55,7 @@ static uint16_t getAffinePalette_M4(GBA* gba, uint32_t mapDataBase, uint32_t _, 
 	uint8_t index = gba->VRAM[mapDataBase + 240*y_i + x_i];
     uint16_t rgb = readPaletteRAM(gba, index);
 
+    rgb &= ~(1<<15);
     return rgb;
 }
 
@@ -61,6 +63,7 @@ static uint16_t getAffinePalette_M5(GBA* gba, uint32_t mapDataBase, uint32_t _, 
     uint32_t address = mapDataBase+320*y_i+2*x_i;
     uint16_t rgb = gba->VRAM[address] | (gba->VRAM[address+1] << 8);	
 
+    rgb &= ~(1<<15);
     return rgb;
 }
 
@@ -72,10 +75,10 @@ static bool computeBGRotScalScanline(GBA* gba, uint8_t N, uint16_t linebuffer[],
 
     /* BGPx are already exact 16 bit signed fixed point (16.8) */
     uint8_t base = (N&1) ? BG3PA : BG2PA;
-    int16_t BGPA = (int16_t)(readIO(gba, base, WIDTH_16));
-    int16_t BGPB = (int16_t)(readIO(gba, base+2, WIDTH_16));
-    int16_t BGPC = (int16_t)(readIO(gba, base+4, WIDTH_16));
-    int16_t BGPD = (int16_t)(readIO(gba, base+6, WIDTH_16));
+    int16_t BGPA = (int16_t)(readIO_internal(gba, base, WIDTH_16));
+    int16_t BGPB = (int16_t)(readIO_internal(gba, base+2, WIDTH_16));
+    int16_t BGPC = (int16_t)(readIO_internal(gba, base+4, WIDTH_16));
+    int16_t BGPD = (int16_t)(readIO_internal(gba, base+6, WIDTH_16));
 
     //printf("x: %d|y: %d|dx: %d|dmx: %d|dy: %d|dmy: %d|nR: %d\n", BGX>>8, BGY>>8, BGPA>>8, BGPB>>8, BGPC>>8, BGPD>>8, noTilesPerRow);
 
@@ -152,7 +155,7 @@ static bool computeBGRotScalScanline(GBA* gba, uint8_t N, uint16_t linebuffer[],
 }
 
 static bool computeBGRotScalScanline_M1_M2(GBA* gba, uint8_t N, uint16_t linebuffer[]) {
-    uint16_t BGCNT = readIO(gba, BG0CNT+2*N, WIDTH_16);
+    uint16_t BGCNT = readIO_internal(gba, BG0CNT+2*N, WIDTH_16);
     /* Extract character data and screen data base addresses 
      * as well as screen size */
     uint32_t mapDataBase = VRAM_96KB + (BGCNT >> 8 & 0x1F) * 0x800;
@@ -176,9 +179,9 @@ static bool computeBGTextScanline(GBA* gba, uint8_t N, uint16_t linebuffer[]) {
      * It also returns whether there exists a transparent pixel in the scanline */
 
     /* Extract BG registers from layer no. (N) */
-    uint16_t BGCNT = readIO(gba, BG0CNT+2*N, WIDTH_16);
-    uint16_t BGHOFS = readIO(gba, BG0HOFS+2*N, WIDTH_16);
-    uint16_t BGVOFS = readIO(gba, BG0VOFS+2*N, WIDTH_16);
+    uint16_t BGCNT = readIO_internal(gba, BG0CNT+2*N, WIDTH_16);
+    uint16_t BGHOFS = readIO_internal(gba, BG0HOFS+2*N, WIDTH_16);
+    uint16_t BGVOFS = readIO_internal(gba, BG0VOFS+2*N, WIDTH_16);
 
     /* Identify Character(Tile) data base block and Screen (BG Map) base block 
      * and extract rest of the parameters from BGCNT 
@@ -364,7 +367,7 @@ static bool getHighestPriorityBG(GBA* gba, uint8_t* N, bool exclude[]) {
 
     for (int i=8; i<12; i++) {
         if (gba->latchedDISPCNT >> i & 1) {
-            uint16_t CNT = readIO(gba, BG0CNT+2*(i-8), WIDTH_16);
+            uint16_t CNT = readIO_internal(gba, BG0CNT+2*(i-8), WIDTH_16);
             uint8_t prio = CNT & 0b11;
             if (prio < lowestPrio && !exclude[i-8]) {
                 lowestPrio = prio;
@@ -565,8 +568,8 @@ static void renderBGMode5Scanline(GBA* gba) {
 void updateInternalBGNXY(GBA* gba, uint8_t N) {
     /* Update internal BGX and BGY affine counters for BG2 or BG3 from IO */
 
-    uint32_t uBGX = readIO(gba, (N&1) ? BG3X_L : BG2X_L, WIDTH_32);
-    uint32_t uBGY = readIO(gba, (N&1) ? BG3Y_L : BG2Y_L, WIDTH_32);
+    uint32_t uBGX = readIO_internal(gba, (N&1) ? BG3X_L : BG2X_L, WIDTH_32);
+    uint32_t uBGY = readIO_internal(gba, (N&1) ? BG3Y_L : BG2Y_L, WIDTH_32);
 
     /* Sign extend */
     if (uBGX >> 27 & 1) uBGX |= (0xF<<28);
@@ -608,7 +611,7 @@ void stepPPU(GBA* gba) {
 	/* DISPCNT should be latched at the start of HDRAW and unlatched at start of HBLANK.
 	 * The PPU is called to synchornize after the CPU is done for the particular amount of cycles
 	 * this means we're doing a post-sync */
-    uint16_t STAT = readIO(gba, DISPSTAT, WIDTH_16);
+    uint16_t STAT = readIO_internal(gba, DISPSTAT, WIDTH_16);
 
 	switch (gba->ppuVState) {
 		case PPU_VDRAW: {
@@ -666,10 +669,10 @@ void stepPPU(GBA* gba) {
                 /* Check for V-Count match in DISPSTAT */
 				uint8_t vmatch = STAT >> 8;
 				if (vmatch == gba->IO[VCOUNT]) {
-					writeIO(gba, DISPSTAT, STAT | 0b100, WIDTH_16);
+					writeIO_internal(gba, DISPSTAT, STAT | 0b100, WIDTH_16);
                     /* If vcounter IRQ enabled, then request interrupt */
                     if (STAT >> 5 & 1) requestInterrupt(gba, IRQ_LCD_VCOUNTER);
-				} else writeIO(gba, DISPSTAT, STAT & ~0b100, WIDTH_16);
+				} else writeIO_internal(gba, DISPSTAT, STAT & ~0b100, WIDTH_16);
 
 				if (gba->IO[VCOUNT] == 160) {
 					/* Enter VBLANK and render frame */
@@ -700,16 +703,16 @@ void stepPPU(GBA* gba) {
 				/* Check for V-Count match in DISPSTAT */
 				uint8_t vmatch = STAT >> 8;
 				if (vmatch == gba->IO[VCOUNT]) {
-					writeIO(gba, DISPSTAT, STAT | 0b100, WIDTH_16);
-				} else writeIO(gba, DISPSTAT, STAT & ~0b100, WIDTH_16);
+					writeIO_internal(gba, DISPSTAT, STAT | 0b100, WIDTH_16);
+				} else writeIO_internal(gba, DISPSTAT, STAT & ~0b100, WIDTH_16);
 
 				/* Set HBLANK DISPSTAT flag (should be done later) */
-				writeIO(gba, DISPSTAT, STAT | 0b10, WIDTH_16);
+				writeIO_internal(gba, DISPSTAT, STAT | 0b10, WIDTH_16);
 				gba->ppuHState = PPU_HBLANK;
 			} else if (gba->ppuHState == PPU_HBLANK) {
 				gba->IO[VCOUNT]++;
 				/* Set HDRAW, Clear HBLANK DISPSTAT flag */
-				writeIO(gba, DISPSTAT, STAT & ~0b10, WIDTH_16);
+				writeIO_internal(gba, DISPSTAT, STAT & ~0b10, WIDTH_16);
 				gba->ppuHState = PPU_HDRAW;
 
 				if (gba->IO[VCOUNT] == 228) {
@@ -725,7 +728,7 @@ void stepPPU(GBA* gba) {
 					latchDISPCNT(gba);
 				} else if (gba->IO[VCOUNT] == 227) {
 					/* Last line of VBLANK, unset VBLANK flag in DISPSTAT */
-					writeIO(gba, DISPSTAT, STAT & ~1, WIDTH_16);
+					writeIO_internal(gba, DISPSTAT, STAT & ~1, WIDTH_16);
 				}
 			}
 			break;

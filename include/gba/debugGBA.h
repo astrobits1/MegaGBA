@@ -5,10 +5,10 @@
 
 /* -------- Options -------- */
 //#define DEBUG_ENABLED
-    //#define DEBUG_TRACE_STATE
+    #define DEBUG_TRACE_STATE
         #define DEBUG_PRINT_REGS
             #define DEBUG_LIMIT_REGS
-    //#define DEBUG_LOG_MEM
+    #define DEBUG_LOG_MEM
 
 #define DEBUG_SET_BREAKPOINT(s) puts(s); getchar()
 

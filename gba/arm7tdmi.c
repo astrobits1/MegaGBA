@@ -675,6 +675,7 @@ static void LDR_STR(struct GBA* gba, uint32_t ins) {
 
             word >>= alignOffset * 8;
             word |= trailing << (32-(alignOffset*8));
+
 			gba->REG[Rd] = word;
 		}
 
@@ -2106,6 +2107,10 @@ static void requestException(GBA* gba, CPU_EXCEP excep) {
     gba->exceptionState |= 1 << excep;
 }
 
+static void clearExceptionRequest(GBA* gba, CPU_EXCEP excep) {
+    gba->exceptionState &= ~(1 << excep);
+}
+
 static void triggerException(GBA* gba, CPU_EXCEP excep) {
     /* Given we need to handle a particular exception, this function follows the procedure 
      * It is called at the end of dispatch, before the next execution takes place 
@@ -2122,7 +2127,7 @@ static void triggerException(GBA* gba, CPU_EXCEP excep) {
         case CPU_EXCEP_FIQ: {
             /* Address of instruction that was supposed to execute next
              *      + 4 for ARM and THUMB */
-            retPC = gba->cpu_state == CPU_STATE_ARM ? gba->REG[R15] : gba->REG[R15]+2;
+            retPC = gba->cpu_state == CPU_STATE_ARM ? gba->REG[R15]-4 : gba->REG[R15];
             vector = 0x1C;
             switchMode(gba, CPU_MODE_FIQ);
             CPSR_SetBit(gba, CPSR_FIQ_DIS);
@@ -2130,7 +2135,7 @@ static void triggerException(GBA* gba, CPU_EXCEP excep) {
         }
         case CPU_EXCEP_IRQ: {
             /* ''''''''''''' */ 
-            retPC = gba->cpu_state == CPU_STATE_ARM ? gba->REG[R15] : gba->REG[R15]+2;
+            retPC = gba->cpu_state == CPU_STATE_ARM ? gba->REG[R15]-4 : gba->REG[R15];
             vector = 0x18;
             switchMode(gba, CPU_MODE_IRQ);
             break;
@@ -2139,14 +2144,14 @@ static void triggerException(GBA* gba, CPU_EXCEP excep) {
             /* Address of instruction that led to exception (the one that just executed) 
              *      + 4 for ARM
              *      + 2 for THUMB */
-            retPC = gba->cpu_state == CPU_STATE_ARM ? gba->REG[R15]-4 : gba->REG[R15]-2;
+            retPC = gba->cpu_state == CPU_STATE_ARM ? gba->REG[R15]-8 : gba->REG[R15]-4;
             vector = 0x08;
             switchMode(gba, CPU_MODE_SVC);
             break;
         }
         case CPU_EXCEP_UNDEFINED: {
             /* ''''''''''''' */
-            retPC = gba->cpu_state == CPU_STATE_ARM ? gba->REG[R15]-4 : gba->REG[R15]-2;
+            retPC = gba->cpu_state == CPU_STATE_ARM ? gba->REG[R15]-8 : gba->REG[R15]-4;
             vector = 0x04;
             switchMode(gba, CPU_MODE_UND);
             break;
@@ -2199,19 +2204,20 @@ static void checkExceptions(GBA* gba) {
 
 void requestInterrupt(GBA* gba, IRQ irq) {
     /* Request an interrupt, this sets the request flag in IF */
-    uint16_t data = readIO(gba, IF, WIDTH_16);
+    uint16_t data = readIO_internal(gba, IF, WIDTH_16);
     data |= 1 << irq;
-    writeIO(gba, IF, data, WIDTH_16);
+    writeIO_internal(gba, IF, data, WIDTH_16);
 }
 
 static void handleInterrupts(GBA* gba) {
     /* Check for possible interrupts and call for IRQ exception if conditions are satisfied */
 
     /* Check IME, CPU IRQ enable check is handled by the exception handler */
-    if ((readIO(gba, IME, WIDTH_16) & 1) == 0) return;
+    if ((readIO_internal(gba, IME, WIDTH_16) & 1) == 0) return;
 
-    uint16_t IE_data = readIO(gba, IE, WIDTH_16);
-    uint16_t IF_data = readIO(gba, IF, WIDTH_16);
+    uint16_t IE_data = readIO_internal(gba, IE, WIDTH_16);
+    uint16_t IF_data = readIO_internal(gba, IF, WIDTH_16);
+    bool requested = false;
     /* Check IF and IE */
     for (int i=0; i<16; i++) {
         if ((IE_data >> i & 1) && (IF_data >> i & 1)) {
@@ -2219,10 +2225,12 @@ static void handleInterrupts(GBA* gba) {
              * Priorities are handled by the software. 
              * IF bit is not cleared automatically and requires manual acknowledgement */
             requestException(gba, CPU_EXCEP_IRQ);
-
+            requested = true;
             break;
         }
     }
+
+    if (!requested) clearExceptionRequest(gba, CPU_EXCEP_IRQ);
 }
 
 /* -------------------------------------------------------------------- */

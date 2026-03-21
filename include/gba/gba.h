@@ -168,9 +168,12 @@ struct GBA {
 
 typedef struct GBA GBA;
 
-/* Read/Write IO registers - Mainly for internal hardware emulation to access/write registers */
+/* Read/Write IO registers - internal versions for internal hardware emulation to access/write 
+ * registers and normal for stricter bytewise address checking (for software access) */
 
-uint32_t readIO(GBA* gba, uint32_t address, uint8_t size);
+uint32_t readIO_internal(GBA* gba, uint32_t ioaddr, uint8_t size);
+uint32_t readIO(GBA* gba, uint32_t ioaddr, uint8_t size);
+void writeIO_internal(GBA* gba, uint32_t address, uint32_t data, uint8_t size);
 void writeIO(GBA* gba, uint32_t address, uint32_t data, uint8_t size);
 
 /* Bus functions */

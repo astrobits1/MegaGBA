@@ -34,8 +34,8 @@ void SDLEvents(GBA* gba) {
     /* We listen for events like keystrokes and window closing */
     SDL_Event event;
 
-#define KEYINPUT_SET(b)     writeIO(gba, KEYINPUT, readIO(gba, KEYINPUT, WIDTH_16) | (1 << b), WIDTH_16)
-#define KEYINPUT_RESET(b)   writeIO(gba, KEYINPUT, readIO(gba, KEYINPUT, WIDTH_16) & ~(1 << b), WIDTH_16)
+#define KEYINPUT_SET(b)     writeIO_internal(gba, KEYINPUT, readIO_internal(gba, KEYINPUT, WIDTH_16) | (1 << b), WIDTH_16)
+#define KEYINPUT_RESET(b)   writeIO_internal(gba, KEYINPUT, readIO_internal(gba, KEYINPUT, WIDTH_16) & ~(1 << b), WIDTH_16)
 
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_QUIT) {
@@ -97,15 +97,15 @@ static void initialiseIO(GBA* gba) {
 
     /* Initialise affine matrix to identity, so even if they are not used
      * things render normally */
-    writeIO(gba, BG2PA, 1 << 8, WIDTH_16);
-    writeIO(gba, BG3PA, 1 << 8, WIDTH_16);
-    writeIO(gba, BG2PD, 1 << 8, WIDTH_16);
-    writeIO(gba, BG3PD, 1 << 8, WIDTH_16);
+    writeIO_internal(gba, BG2PA, 1 << 8, WIDTH_16);
+    writeIO_internal(gba, BG3PA, 1 << 8, WIDTH_16);
+    writeIO_internal(gba, BG2PD, 1 << 8, WIDTH_16);
+    writeIO_internal(gba, BG3PD, 1 << 8, WIDTH_16);
 
     /* Keypad */
 
     /* KEYINPUT - Set all key states to released */
-    writeIO(gba, KEYINPUT, 0xFFFF, WIDTH_16);
+    writeIO_internal(gba, KEYINPUT, 0xFFFF, WIDTH_16);
 }
 
 
@@ -236,6 +236,36 @@ static inline void littleEndian16Encode(uint8_t* ptr, uint16_t value) {
 	ptr[1] = (value >> 8) & 0xFF;
 }
 
+static uint32_t readMem(GBA* gba, uint8_t* ptr, uint8_t size) {
+    switch (size) {
+		case WIDTH_32: return littleEndian32Decode(ptr);
+		case WIDTH_16: return littleEndian16Decode(ptr);
+		case WIDTH_8 : return *ptr;
+        default: return 0;
+	}
+
+}
+
+static void writeMem(GBA* gba, uint8_t* ptr, uint32_t data, uint8_t size) {
+    switch (size) {
+		case WIDTH_32: {
+            littleEndian32Encode(ptr, data); 
+            return;
+        }
+		case WIDTH_16: {
+            littleEndian16Encode(ptr, data); 
+            return;
+        }
+		case WIDTH_8: {
+            *ptr = (uint8_t)data;
+            return;
+        }
+	}
+
+}
+
+
+
 /* busRead and busWrite are not completely fullproof, you could for example
  * read from write only memory or write to read only memory if you positioned a 16/32bit read/write
  * at the right place. Only first addresses are checked.To prevent this a more thorough 
@@ -278,6 +308,9 @@ uint32_t busRead(GBA* gba, uint32_t address, uint8_t size) {
 	} else if (address >= INT_WRAM_32KB && address <= INT_WRAM_32KB_END) {
 		/* Read from internal work RAM */
 		ptr = &gba->IWRAM[address - INT_WRAM_32KB];
+    } else if (address >= 0x03FFFF00 && address <= 0x03FFFFFF) {
+        /* Mirror of IWRAM 0x03007F00 - 0x03007FFF */
+        ptr = &gba->IWRAM[(address & 0xFF)|(0x7F<<8)];
 	} else if (address >= EXT_WRAM_256KB && address <= EXT_WRAM_256KB_END) {
 		/* Read from external work RAM - waitstates apply */
 		ptr = &gba->EWRAM[address - EXT_WRAM_256KB];
@@ -286,62 +319,44 @@ uint32_t busRead(GBA* gba, uint32_t address, uint8_t size) {
 		ptr = &gba->VRAM[address - VRAM_96KB];
 	} else if (address >= IO_REG_1KB && address <= IO_REG_1KB_END) {
 		/* Read from IO register */
-		ptr = &gba->IO[address - IO_REG_1KB];
-
-        /* Handle read only */
-        if ((address - IO_REG_1KB) >= BG0HOFS && (address - IO_REG_1KB) <= BG3VOFS) {
-            return 0;
-        } else if ((address - IO_REG_1KB) >= BG2PA && (address - IO_REG_1KB) <= BG3Y_H+1) {
-            return 0;
-        }
+		return readIO(gba, address-IO_REG_1KB, size);
 	} else if (address >= PALETTE_RAM_1KB && address <= PALETTE_RAM_1KB_END) {
 		/* Read from Palette RAM */
 		ptr = &gba->PaletteRAM[address - PALETTE_RAM_1KB];	
 	}
 
     if (ptr == NULL) return 0;
-
-    switch (size) {
-		case WIDTH_32: return littleEndian32Decode(ptr);
-		case WIDTH_16: return littleEndian16Decode(ptr);
-		case WIDTH_8 : return *ptr;
-        default: return 0;
-	}
-}
-
-static void writeMem(GBA* gba, uint8_t* ptr, uint32_t data, uint8_t size) {
-    switch (size) {
-		case WIDTH_32: {
-#if defined(DEBUG_ENABLED) && defined(DEBUG_LOG_MEM)
-            printf("Written (W) %08x to %08x\n", data, address);
-#endif
-            littleEndian32Encode(ptr, data); 
-            return;
-        }
-		case WIDTH_16: {
-#if defined(DEBUG_ENABLED) && defined(DEBUG_LOG_MEM)
-            printf("Written (HW) %04x to %08x\n", data, address);
-#endif
-            littleEndian16Encode(ptr, data); 
-            return;
-        }
-		case WIDTH_8: {
-#if defined(DEBUG_ENABLED) && defined(DEBUG_LOG_MEM)
-            printf("Written (B) %02x to %08x\n", data, address);
-#endif
-            *ptr = (uint8_t)data;
-            return;
-        }
-	}
-
+    return readMem(gba, ptr, size);
 }
 
 void busWrite(GBA* gba, uint32_t address, uint32_t data, uint8_t size) {
     uint8_t* ptr = NULL;
+  
+
+#if defined(DEBUG_ENABLED) && defined(DEBUG_LOG_MEM)
+    switch (size) {
+		case WIDTH_32: {
+            printf("Written (W) %08x to %08x\n", data, address);
+            break;
+        }
+		case WIDTH_16: {
+            printf("Written (HW) %04x to %08x\n", data, address);
+            break;
+        }
+		case WIDTH_8: {
+            printf("Written (B) %02x to %08x\n", data, address);
+            break;
+        }
+	}
+#endif
+
 
 	if (address >= INT_WRAM_32KB && address <= INT_WRAM_32KB_END) {
 		/* Write to internal workram with current size and little endian formatting */
 		ptr = &gba->IWRAM[address - INT_WRAM_32KB];
+    } else if (address >= 0x03FFFF00 && address <= 0x03FFFFFF) {
+        /* Mirror of IWRAM 0x03007F00 - 0x03007FFF */
+        ptr = &gba->IWRAM[(address & 0xFF)|(0x7F<<8)];
 	} else if (address >= EXT_WRAM_256KB && address <= EXT_WRAM_256KB_END) {
 		ptr = &gba->EWRAM[address - EXT_WRAM_256KB];
 	} else if (address >= VRAM_96KB && address <= VRAM_96KB_END) {
@@ -356,37 +371,9 @@ void busWrite(GBA* gba, uint32_t address, uint32_t data, uint8_t size) {
             size = WIDTH_16;
 		}
 	} else if (address >= IO_REG_1KB && address <= IO_REG_1KB_END) {
-        uint32_t ioaddr = address - IO_REG_1KB;
-		ptr = &gba->IO[ioaddr];
-		/* Check for read-only registers, and prevent a write */
-		switch (ioaddr) {
-			case VCOUNT: return;
-			case DISPSTAT: {
-				/* Handle read only bits */
-				uint8_t current = *ptr;
-				/* V-Blank, H-Blank and V-Counter flags are read only */
-				data &= ~0b111;
-				data |= current & 0b111;
-				break;
-			}
-		}
-
-        /* Update internal registers on every write for BGNXY */
-        if (ioaddr >= BG2X_L && ioaddr <= BG2Y_H) {
-            writeMem(gba, ptr, data, size);
-            updateInternalBGNXY(gba, 2);
-            return;
-        } else if (ioaddr >= BG3X_L && ioaddr <= BG3Y_H) {
-            writeMem(gba, ptr, data, size);
-            updateInternalBGNXY(gba, 3);
-            return;
-        } else if (ioaddr == IF || ioaddr == IF+1) {
-            /* Intercept write to IF, whatever bits are high in the data for byte (for byte/hw)
-             * will be 'acknowledged' and cleared in IF if they were set */
-            writeIO(gba, ioaddr, readIO(gba, ioaddr, size)&(~data), size);
-            return;
-        }
-	} else if (address >= PALETTE_RAM_1KB && address <= PALETTE_RAM_1KB_END) {
+        writeIO(gba, address-IO_REG_1KB, data, size);
+        return;
+    } else if (address >= PALETTE_RAM_1KB && address <= PALETTE_RAM_1KB_END) {
 		ptr = &gba->PaletteRAM[address - PALETTE_RAM_1KB];
 
 		/* Palette RAM only supports 16 and 32 bit writes, writing a byte to the addressed
@@ -405,21 +392,103 @@ void busWrite(GBA* gba, uint32_t address, uint32_t data, uint8_t size) {
 
 /* ------------- IO Read/Write -------------- */
 
-uint32_t readIO(GBA* gba, uint32_t address, uint8_t size) {
-	switch (size) {
-		case WIDTH_32: return littleEndian32Decode(&gba->IO[address]);
-		case WIDTH_16: return littleEndian16Decode(&gba->IO[address]);
-		case WIDTH_8:  return gba->IO[address];
-
-		default: return 0;
-	}
+inline uint32_t readIO_internal(GBA* gba, uint32_t ioaddr, uint8_t size) {
+    return readMem(gba, &gba->IO[ioaddr], size);
 }
 
-void writeIO(GBA* gba, uint32_t address, uint32_t data, uint8_t size) {
+inline void writeIO_internal(GBA* gba, uint32_t ioaddr, uint32_t data, uint8_t size) {
+    writeMem(gba, &gba->IO[ioaddr], data, size);
+}
+
+static uint32_t readIO_byte(GBA* gba, uint32_t ioaddr) {
+    /* Handle read only */
+    if ((ioaddr) >= BG0HOFS && (ioaddr) <= BG3VOFS) {
+        return 0;
+    } else if ((ioaddr) >= BG2PA && (ioaddr) <= BG3Y_H+1) {
+        return 0;
+    }
+
+    return gba->IO[ioaddr];
+}
+
+uint32_t readIO(GBA* gba, uint32_t ioaddr, uint8_t size) {
+    switch (size) {
+        case WIDTH_32: {
+            uint32_t value = readIO_byte(gba, ioaddr);
+            value |= readIO_byte(gba, ioaddr+1) << 8;
+            value |= readIO_byte(gba, ioaddr+2) << 16;
+            value |= readIO_byte(gba, ioaddr+3) << 24;
+
+            return value;
+        }
+        case WIDTH_16: {
+            uint16_t value = readIO_byte(gba, ioaddr);
+            value |= readIO_byte(gba, ioaddr+1) << 8;
+
+            return value;
+        }
+        case WIDTH_8: {
+            return readIO_byte(gba, ioaddr);
+        }
+    }
+
+    return 0;
+}
+
+static void writeIO_byte(GBA* gba, uint32_t ioaddr, uint8_t data) {
+    /* Check for read-only registers, and prevent a write */
+    switch (ioaddr) {
+        case VCOUNT: return;
+        case DISPSTAT: {
+            /* Handle read only bits */
+            uint8_t current = gba->IO[ioaddr];
+            /* V-Blank, H-Blank and V-Counter flags are read only */
+            data &= ~0b111;
+            data |= current & 0b111;
+            break;
+        }
+    }
+
+    /* Update internal registers on every write for BGNXY */
+    if (ioaddr >= BG2X_L && ioaddr <= BG2Y_H) {
+        gba->IO[ioaddr] = data;
+        updateInternalBGNXY(gba, 2);
+        return;
+    } else if (ioaddr >= BG3X_L && ioaddr <= BG3Y_H) {
+        gba->IO[ioaddr] = data;
+        updateInternalBGNXY(gba, 3);
+        return;
+    } else if (ioaddr == IF || ioaddr == IF+1) {
+        /* Intercept write to IF, whatever bits are high in the data for byte (for byte/hw)
+         * will be 'acknowledged' and cleared in IF if they were set */
+        gba->IO[ioaddr] &= ~data;
+        return;
+    }
+
+    gba->IO[ioaddr] = data;
+}
+
+/* Writes to IO by doing strict bytewise address checking, by writing every byte manually 
+ * through aligned. This version is used for software IO accesses */
+
+void writeIO(GBA* gba, uint32_t ioaddr, uint32_t data, uint8_t size) {
 	switch (size) {
-		case WIDTH_32: littleEndian32Encode(&gba->IO[address], data); return;
-		case WIDTH_16: littleEndian16Encode(&gba->IO[address], data); return;
-		case WIDTH_8:  gba->IO[address] = (uint8_t)data; return;
+		case WIDTH_32: {
+            writeIO_byte(gba, ioaddr, data & 0xFF);
+            writeIO_byte(gba, ioaddr+1, data >> 8 & 0xFF);
+            writeIO_byte(gba, ioaddr+2, data >> 16 & 0xFF);
+            writeIO_byte(gba, ioaddr+3, data >> 24 & 0xFF);
+            return;
+        }
+		case WIDTH_16: {
+            writeIO_byte(gba, ioaddr, data & 0xFF);
+            writeIO_byte(gba, ioaddr+1, data >> 8 & 0xFF);
+            return;
+        }
+		case WIDTH_8: {
+            writeIO_byte(gba, ioaddr, data);
+            return;
+        }
 	}
 }
 
