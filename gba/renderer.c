@@ -1,6 +1,7 @@
 #include <gba/gba.h>
 #include <gba/renderer.h>
 #include <SDL2/SDL.h>
+#include <unistd.h>
 
 static inline void latchDISPCNT(GBA* gba) {
 	uint16_t DISPCNT = readIO_internal(gba, DISPCNT, WIDTH_16);
@@ -37,6 +38,7 @@ static uint16_t getAffinePalette_M1_M2(GBA* gba, uint32_t mapDataBase, uint32_t 
     uint8_t pixelPalette = busRead(gba, pixelRowBase + pixel, WIDTH_8);
     uint16_t rgb = readPaletteRAM(gba, pixelPalette);
 
+    rgb &= ~(1<<15);
     if (pixelPalette == 0) rgb |= 1 << 15;
     return rgb;
 }
@@ -80,7 +82,7 @@ static bool computeBGRotScalScanline(GBA* gba, uint8_t N, uint16_t linebuffer[],
     int16_t BGPC = (int16_t)(readIO_internal(gba, base+4, WIDTH_16));
     int16_t BGPD = (int16_t)(readIO_internal(gba, base+6, WIDTH_16));
 
-    //printf("x: %d|y: %d|dx: %d|dmx: %d|dy: %d|dmy: %d|nR: %d\n", BGX>>8, BGY>>8, BGPA>>8, BGPB>>8, BGPC>>8, BGPD>>8, noTilesPerRow);
+    //printf("y: %d|PA: %04x|PB: %04x|PC: %04x|PD: %04x\n", gba->IO[VCOUNT], BGPA, BGPB, BGPC, BGPD);
 
     bool transparentPixelExists = false;
     bool transparentPixel = false;
@@ -690,6 +692,17 @@ void stepPPU(GBA* gba) {
                     SDL_RenderClear(gba->SDL_Renderer);
                     SDL_RenderCopy(gba->SDL_Renderer, gba->SDL_Texture, NULL, NULL);
 					SDL_RenderPresent(gba->SDL_Renderer);
+
+
+                    /*
+                    uint64_t ticksCurrent = clock_u();
+                    double diff = (1e6/60)-(ticksCurrent-gba->ticksAtLastFrame);
+                    gba->ticksAtLastFrame = ticksCurrent;
+                    if (diff > 0) usleep(diff);
+
+                    printf("fps: %g|cycles: %lu\n", 1/((clock_u()-gba->ticksAtLastFrame)/1e6), gba->cycles);
+                    */
+                    
 				} else {
 					/* Latch DISPCNT if not entering VBLANK */
 					latchDISPCNT(gba);

@@ -2,6 +2,8 @@
 #define gba_renderer_h
 #include <stdint.h>
 
+#define CYCLES_PER_FRAME 280896 
+
 #define HEIGHT_PX 160
 #define WIDTH_PX 240
 #define DISPLAY_SCALING 4

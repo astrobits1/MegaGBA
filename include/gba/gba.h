@@ -8,6 +8,7 @@
 #include <gba/renderer.h>
 #include <gba/gamepak.h>
 
+
 enum {
 	BIOS_ROM_16KB 		= 0x00000000,
 	BIOS_ROM_16KB_END 	= 0x00003FFF,
@@ -101,7 +102,6 @@ struct GBA {
 	/* ------------------ CPU -------------------- */
 	CPU_STATE cpu_state; 		/* THUMB/ARM state */
 	CPU_MODE cpu_mode; 			/* Mode of the CPU */
-	unsigned long cycles; 		/* Cycle counter of the CPU */
 	uint32_t pipeline[3]; 		/* 3 Stage pipeline (Queue for fetched opcodes) */
 	uint8_t pipelineInsertPoint;/* Point where prefetched opcode is inserted */
 	uint8_t pipelineReadPoint;  /* Point where opcode to be executed is read from */
@@ -109,7 +109,8 @@ struct GBA {
 								   either because the pipeline was flushed or the fetch was already
 								   done internally during execution stage to emulate PC+12 */
     /* Exceptions */
-    uint8_t exceptionState;     /* When exceptions are triggered, the corresponding bit is set high in here */
+    uint8_t exceptionState;     /* When asynchronous exceptions are requested, the corresponding bit
+                                    is set high*/
 	/* Main Regs */
 	uint32_t REG[16]; 			/* Main 16 registers */
 	uint32_t CPSR; 				/* Main CPSR Register */
@@ -149,6 +150,9 @@ struct GBA {
 	GamePak* gamepak; 					/* Cartridge containing allocated code and important info
 										   about the game */
 	bool run; 							/* Flag used to stop the emulator and check if its running */
+    uint64_t cycles;                    /* Cycle counter */
+    uint64_t ticksAtLastFrame;          /* Ticks elapsed since last frame render */
+    uint64_t ticksAtBoot;               /* Ticks since start of emulator from clock_u() */
 
 	/* Allocations */
     uint8_t* biosROM;
@@ -188,5 +192,8 @@ void startGBAEmulator(GamePak* gamepak, uint8_t* biosROM, size_t biosSize);
 
 void initialiseGBA(GBA* gba, GamePak* gamepak, uint8_t* biosROM, size_t biosSize);
 void freeGBA(GBA* gba);
+
+/* Utility */
+unsigned long clock_u();
 
 #endif

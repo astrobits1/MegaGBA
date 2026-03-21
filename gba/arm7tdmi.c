@@ -10,7 +10,8 @@ static void flushRefillPipeline(GBA*);
 static inline void doInternalPrefetchARM(GBA* gba);
 static void switchMode(GBA* gba, CPU_MODE newMode);
 static bool checkCondition(GBA*, uint8_t);
-static void requestException(GBA*, CPU_EXCEP);
+static void requestAsyncException(GBA*, CPU_EXCEP);
+static void triggerException(GBA* gba, CPU_EXCEP excep);
 static void returnException(GBA*);
 /* ---------------------- CPSR Functions ---------------------- */
 
@@ -1028,7 +1029,7 @@ static void SWP(struct GBA* gba, uint32_t ins) {
 
 static void SWI(struct GBA* gba, uint32_t ins) {
 	/* Triggers the SWI exception */
-    requestException(gba, CPU_EXCEP_SWI);
+    triggerException(gba, CPU_EXCEP_SWI);
 }
 
 static void Undefined_ARM(struct GBA* gba, uint32_t ins) {
@@ -1644,7 +1645,7 @@ static void LONG_BRANCH_W_LINK(struct GBA* gba, uint16_t ins) {
 
 static void SWI_THUMB(struct GBA* gba, uint16_t ins) {
     /* THUMB Software interrupt */
-    requestException(gba, CPU_EXCEP_SWI);
+    triggerException(gba, CPU_EXCEP_SWI);
 }
 
 
@@ -2101,13 +2102,14 @@ static inline void doInternalPrefetchARM(GBA* gba) {
 /* ----------------------------------------------------------------- */
 /*                       Exception Handling                          */
 
-static void requestException(GBA* gba, CPU_EXCEP excep) {
-    /* Exception can be requested any time during the execution/prefetching 
-     * Handling is done at a fixed time, i.e after execution */
+static void requestAsyncException(GBA* gba, CPU_EXCEP excep) {
+    /* Asynchronous exceptions can be requested any time during the execution/prefetching 
+     * Handling is done at a fixed time, i.e after execution.
+     * For synchronous exceptions like SWI, they are handled immediately within the instruction */
     gba->exceptionState |= 1 << excep;
 }
 
-static void clearExceptionRequest(GBA* gba, CPU_EXCEP excep) {
+static void clearAsyncExceptionRequest(GBA* gba, CPU_EXCEP excep) {
     gba->exceptionState &= ~(1 << excep);
 }
 
@@ -2129,15 +2131,17 @@ static void triggerException(GBA* gba, CPU_EXCEP excep) {
             retPC = gba->cpu_state == CPU_STATE_ARM ? gba->REG[R15]-4 : gba->REG[R15];
             vector = 0x18;
             switchMode(gba, CPU_MODE_IRQ);
+            //printf("Triggered IRQ\n");
             break;
         }
         case CPU_EXCEP_SWI: {
             /* Address of instruction that led to exception (the one that just executed) 
              *      + 4 for ARM
              *      + 2 for THUMB */
-            retPC = gba->cpu_state == CPU_STATE_ARM ? gba->REG[R15]-8 : gba->REG[R15]-4;
+            retPC = gba->cpu_state == CPU_STATE_ARM ? gba->REG[R15]-4 : gba->REG[R15]-2;
             vector = 0x08;
             switchMode(gba, CPU_MODE_SVC);
+            //printf("Triggered SWI\n");
             break;
         }
         /* GBA memory does not issue faults, it returns open bus/garbage which means
@@ -2164,23 +2168,23 @@ static void returnException(GBA* gba) {
     /* Do necessary mode and state switch */
     switchMode(gba, gba->CPSR & 0x1F);
     if (CPSR_GetBit(gba, CPSR_T)) {gba->cpu_state = CPU_STATE_THUMB;}
+
+    //printf("Returned from exception\n");
 }
 
-static void checkExceptions(GBA* gba) {
-    /* Called at the end of dispatch, check if any exceptions have been generated 
+static void checkAsyncExceptions(GBA* gba) {
+    /* Called at the end of dispatch, check if any asynchronous exceptions have been generated 
      * and handle them accordingly, beginning from next execution */
-    for (int i=CPU_EXCEP_COUNT-1; i>=0; i--) {
-        uint8_t requested = (gba->exceptionState >> i) & 1;
-        if (requested) {
-            /* Skip IRQ and FIQ requests if they have been disabled in CPSR 
-             * They would be handled after the bits are cleared */
-            if (i == CPU_EXCEP_IRQ && CPSR_GetBit(gba, CPSR_IRQ_DIS)) continue;
+    uint8_t requested = (gba->exceptionState >> CPU_EXCEP_IRQ) & 1;
+    if (requested) {
+        /* Skip IRQ if it has been disabled in CPSR 
+         * It would be handled after the bits are cleared */
+        if (CPSR_GetBit(gba, CPSR_IRQ_DIS)) return;
 
-            /* A suitable exception can be handled now */
-            triggerException(gba, i);
-            /* Clear exception request bit */
-            gba->exceptionState &= ~(1 << i);
-        }
+        /* A suitable exception can be handled now */
+        triggerException(gba, CPU_EXCEP_IRQ);
+        /* Clear exception request bit */
+        gba->exceptionState &= ~(1 << CPU_EXCEP_IRQ);
     }
 }
 
@@ -2208,13 +2212,13 @@ static void handleInterrupts(GBA* gba) {
             /* Atleast one interrupt is enabled and requested
              * Priorities are handled by the software. 
              * IF bit is not cleared automatically and requires manual acknowledgement */
-            requestException(gba, CPU_EXCEP_IRQ);
+            requestAsyncException(gba, CPU_EXCEP_IRQ);
             requested = true;
             break;
         }
     }
 
-    if (!requested) clearExceptionRequest(gba, CPU_EXCEP_IRQ);
+    if (!requested) clearAsyncExceptionRequest(gba, CPU_EXCEP_IRQ);
 }
 
 /* -------------------------------------------------------------------- */
@@ -2241,7 +2245,7 @@ void stepCPU(GBA* gba) {
     /* Handle any requested interrupts */
     handleInterrupts(gba);
     /* Exceptions are checked for, and pipeline may be flushed and refilled before continuing */
-    checkExceptions(gba);
+    checkAsyncExceptions(gba);
     gba->skipFetch = false;         /* Fetch does not follow but rather a read */
 
 	if (gba->cpu_state == CPU_STATE_ARM) {

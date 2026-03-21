@@ -8,6 +8,20 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <sys/time.h>
+#include <time.h>
+
+
+/* Utility */
+unsigned long clock_u() {
+    /* Function to get time with microsecond precision */
+    struct timeval t;
+    gettimeofday(&t, NULL);
+
+    return (t.tv_sec * 1e6 + t.tv_usec);
+}
+
+/* ------------------------------------------------------------------- */
 
 bool initialiseSDL(GBA* gba) {
     SDL_Init(SDL_INIT_EVERYTHING);
@@ -114,6 +128,9 @@ static void initialiseIO(GBA* gba) {
 void initialiseGBA(GBA* gba, GamePak* gamepak, uint8_t* biosBuffer, size_t biosSize) {
 	gba->gamepak = gamepak;
 	gba->run = false;
+    gba->cycles = 0;
+    gba->ticksAtBoot = 0;
+    gba->ticksAtLastFrame = 0;
     gba->SDL_Texture = NULL;
 	gba->SDL_Renderer = NULL;
 	gba->SDL_Window = NULL;
@@ -193,12 +210,14 @@ void startGBAEmulator(GamePak* gamepak, uint8_t* biosBuffer, size_t biosSize) {
 	initialiseGBA(&gba, gamepak, biosBuffer, biosSize);
 
 	gba.run = true;
-
+    gba.ticksAtBoot = clock_u();
+    gba.ticksAtLastFrame = gba.ticksAtBoot;
 	/* For now, we take each instruction as 1 cycle consumed */
 
 	while (gba.run) {
 		for (int i = 0; i < 960; i++) {
 			stepCPU(&gba);
+            gba.cycles++;
 		}
 
 		/* HDRAW is over, run the PPU to catch up
@@ -207,11 +226,18 @@ void startGBAEmulator(GamePak* gamepak, uint8_t* biosBuffer, size_t biosSize) {
 
 		for (int i = 0; i < 272; i++) {
 			stepCPU(&gba);
+            gba.cycles++;
 		}
 
 		/* HBLANK is over, run the PPU to catch up */
 		stepPPU(&gba);
 	}
+
+    uint64_t ticksFinal = clock_u();
+    double elapsedS = (ticksFinal - gba.ticksAtBoot)/1e6;
+    double clockFreqMHZ = gba.cycles/(elapsedS*1e6);
+
+    printf("Runtime: %g secs | Cycles: %lu | Mean Clock Freq: %g MHz\n", elapsedS, gba.cycles, clockFreqMHZ);
 }
 
 /* -------- Bus Functions --------- */
