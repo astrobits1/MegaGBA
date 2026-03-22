@@ -1853,19 +1853,8 @@ static void initialiseLUT_ARM(GBA* gba) {
 		} else if ((index & 0b111110001111) == 0b000010001001) {
 			/* Checking for multiply long and multiply accumulate long with variations
 			 * (UMULL, UMLAL, SMULL, SMLAL), S bit is checked at runtime */
-			gba->ARM_LUT[index] = &MULL_MLAL;
-		} else if ((index & 0b111110110000) == 0b000100000000) {
-			/* Checking for MRS (transfer PSR->Reg)
-			 * bit 22 can be 1 or 0 depending on whether SPSR/CPSR has to be used,
-			 * which will be determined at runtime */
-			gba->ARM_LUT[index] = &MRS;
-		} else if ((index & 0b110110110000) == 0b000100100000) {
-			/* Checking for MSR (transfer Reg/Imm->PSR)
-			 * This instruction has 2 encodings, one for flag only transfer which can be Imm/Reg
-			 * or full register transfer which is only Reg. This however introduces complicated
-			 * bit collisions which we can avoid by doing runtime checks instead */
-			gba->ARM_LUT[index] = &MSR;
-		} else if ((index & 0b111000001001) == 0b000000001001) {
+			gba->ARM_LUT[index] = &MULL_MLAL; 
+        } else if ((index & 0b111000001001) == 0b000000001001) {
 			/* Checking for Halfword and Signed Data transfer
 			 * (LDRH, STRH, LDRSB, LDRSH) -> Signed Byte and Signed halfword is
 			 * only available for LDR.
@@ -1888,7 +1877,18 @@ static void initialiseLUT_ARM(GBA* gba) {
 			/* Checking for Single Data Transfer (LDR/STR)
 			 * options are checked at runtime */
 			gba->ARM_LUT[index] = &LDR_STR;
-		} else if ((index & 0b110000000000) == 0) {
+        } else if ((index & 0b111110110000) == 0b000100000000) {
+			/* Checking for MRS (transfer PSR->Reg)
+			 * bit 22 can be 1 or 0 depending on whether SPSR/CPSR has to be used,
+			 * which will be determined at runtime */
+			gba->ARM_LUT[index] = &MRS;
+		} else if ((index & 0b110110110000) == 0b000100100000) {
+			/* Checking for MSR (transfer Reg/Imm->PSR)
+			 * This instruction has 2 encodings, one for flag only transfer which can be Imm/Reg
+			 * or full register transfer which is only Reg. This however introduces complicated
+			 * bit collisions which we can avoid by doing runtime checks instead */
+			gba->ARM_LUT[index] = &MSR;
+		}  else if ((index & 0b110000000000) == 0) {
 			/* Checking for Data Processing Instructions
 		 	 * Only bit 27-26 are fixed, rest are variable showing various opcodes and other info
 			 * We setup separate functions for arithmetic and logic, the instructions themselves
@@ -2021,6 +2021,7 @@ void initialiseCPU(GBA* gba) {
 	gba->pipelineReadPoint = 0;
 	gba->skipFetch = false;
 	gba->cycles = 0;
+    gba->halted = false;
 
 	flushRefillPipeline(gba);
     gba->skipFetch = false;
@@ -2131,7 +2132,6 @@ static void triggerException(GBA* gba, CPU_EXCEP excep) {
             retPC = gba->cpu_state == CPU_STATE_ARM ? gba->REG[R15]-4 : gba->REG[R15];
             vector = 0x18;
             switchMode(gba, CPU_MODE_IRQ);
-            //printf("Triggered IRQ\n");
             break;
         }
         case CPU_EXCEP_SWI: {
@@ -2141,7 +2141,6 @@ static void triggerException(GBA* gba, CPU_EXCEP excep) {
             retPC = gba->cpu_state == CPU_STATE_ARM ? gba->REG[R15]-4 : gba->REG[R15]-2;
             vector = 0x08;
             switchMode(gba, CPU_MODE_SVC);
-            //printf("Triggered SWI\n");
             break;
         }
         /* GBA memory does not issue faults, it returns open bus/garbage which means
@@ -2155,6 +2154,7 @@ static void triggerException(GBA* gba, CPU_EXCEP excep) {
     /* Switches to ARM mode because bit 0 is 0 */
     branchAndExchange(gba, vector);
     gba->REG[R14] = retPC;
+
 }
 
 static void returnException(GBA* gba) {
@@ -2168,8 +2168,6 @@ static void returnException(GBA* gba) {
     /* Do necessary mode and state switch */
     switchMode(gba, gba->CPSR & 0x1F);
     if (CPSR_GetBit(gba, CPSR_T)) {gba->cpu_state = CPU_STATE_THUMB;}
-
-    //printf("Returned from exception\n");
 }
 
 static void checkAsyncExceptions(GBA* gba) {
@@ -2198,13 +2196,20 @@ void requestInterrupt(GBA* gba, IRQ irq) {
 }
 
 static void handleInterrupts(GBA* gba) {
-    /* Check for possible interrupts and call for IRQ exception if conditions are satisfied */
-
-    /* Check IME, CPU IRQ enable check is handled by the exception handler */
-    if ((readIO_internal(gba, IME, WIDTH_16) & 1) == 0) return;
+    /* Check for possible interrupts and call for IRQ exception if conditions are satisfied */ 
 
     uint16_t IE_data = readIO_internal(gba, IE, WIDTH_16);
     uint16_t IF_data = readIO_internal(gba, IF, WIDTH_16);
+
+    /* No interrupts enabled and requested */
+    if ((IE_data & IF_data) == 0) return;
+
+    /* If even a single interrupt is enabled and requested, CPU is resumed if halted
+     * IME or CPSR I bit are not checked, but they may prevent IRQ jump anyway */
+    gba->halted = false;
+    /* Check IME, CPU IRQ enable check is handled by the exception handler */
+    if ((readIO_internal(gba, IME, WIDTH_16) & 1) == 0) return;
+
     bool requested = false;
     /* Check IF and IE */
     for (int i=0; i<16; i++) {
@@ -2213,6 +2218,7 @@ static void handleInterrupts(GBA* gba) {
              * Priorities are handled by the software. 
              * IF bit is not cleared automatically and requires manual acknowledgement */
             requestAsyncException(gba, CPU_EXCEP_IRQ);
+            /* Wake up CPU if it was halted */
             requested = true;
             break;
         }
@@ -2247,6 +2253,12 @@ void stepCPU(GBA* gba) {
     /* Exceptions are checked for, and pipeline may be flushed and refilled before continuing */
     checkAsyncExceptions(gba);
     gba->skipFetch = false;         /* Fetch does not follow but rather a read */
+
+    /* handleInterrupts is responsible for resuming halt 
+     * Pipeline is frozen in full state and will resume as is if IRQ jump is not 
+     * taken after resuming from halt. Otherwise checkAsyncExceptions will cause IRQ
+     * jump and pipeline gets reset to IRQ handler */
+    if (gba->halted) return;
 
 	if (gba->cpu_state == CPU_STATE_ARM) {
 #if defined(DEBUG_ENABLED) && defined(DEBUG_TRACE_STATE)

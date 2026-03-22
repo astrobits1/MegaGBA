@@ -71,6 +71,7 @@ void SDLEvents(GBA* gba) {
 
                 default: break;
             }
+
         } else if (event.type == SDL_KEYUP && event.key.repeat == 0) {
             /* Handle keyup by updating KEYINPUT */
             switch (event.key.keysym.scancode) {
@@ -471,7 +472,19 @@ static void writeIO_byte(GBA* gba, uint32_t ioaddr, uint8_t data) {
             /* V-Blank, H-Blank and V-Counter flags are read only */
             data &= ~0b111;
             data |= current & 0b111;
-            break;
+
+            goto skipIf;
+        }
+        case HALTCNT: {
+            uint8_t type = data >> 7 & 1;
+            if (type == 0) {
+                /* Halt mode */
+                gba->halted = true;
+            } else {
+                /* Stop mode */
+            }
+
+            goto skipIf;
         }
     }
 
@@ -491,6 +504,8 @@ static void writeIO_byte(GBA* gba, uint32_t ioaddr, uint8_t data) {
         return;
     }
 
+
+skipIf:
     gba->IO[ioaddr] = data;
 }
 

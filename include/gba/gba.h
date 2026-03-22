@@ -95,13 +95,16 @@ typedef enum {
 
     IE          = 0x200,
     IF          = 0x202,
-    IME         = 0x208
+    IME         = 0x208,
+
+    HALTCNT     = 0x301
 } IO_REG;
 
 struct GBA {
 	/* ------------------ CPU -------------------- */
 	CPU_STATE cpu_state; 		/* THUMB/ARM state */
 	CPU_MODE cpu_mode; 			/* Mode of the CPU */
+    bool halted;                /* Is CPU halted? */
 	uint32_t pipeline[3]; 		/* 3 Stage pipeline (Queue for fetched opcodes) */
 	uint8_t pipelineInsertPoint;/* Point where prefetched opcode is inserted */
 	uint8_t pipelineReadPoint;  /* Point where opcode to be executed is read from */

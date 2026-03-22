@@ -3,7 +3,6 @@
 #include <SDL2/SDL.h>
 #include <unistd.h>
 
-
 static inline void latchDISPCNT(GBA* gba) {
 	uint16_t DISPCNT = readIO_internal(gba, DISPCNT, WIDTH_16);
     gba->latchedDISPCNT = DISPCNT;
@@ -79,11 +78,12 @@ static bool computeBGRotScalScanline(GBA* gba, uint8_t N, uint16_t linebuffer[],
     /* BGPx are already exact 16 bit signed fixed point (16.8) */
     uint8_t base = (N&1) ? BG3PA : BG2PA;
     int16_t BGPA = (int16_t)(readIO_internal(gba, base, WIDTH_16));
+    if ((uint16_t)BGPA == 0xFFFF) printf("why so high\n");;
     int16_t BGPB = (int16_t)(readIO_internal(gba, base+2, WIDTH_16));
     int16_t BGPC = (int16_t)(readIO_internal(gba, base+4, WIDTH_16));
     int16_t BGPD = (int16_t)(readIO_internal(gba, base+6, WIDTH_16));
 
-    //printf("y: %d|BX: %d|BY: %d|PA: %04x|PB: %04x|PC: %04x|PD: %04x|npx: %d\n", gba->IO[VCOUNT], (int)BGX>>8, (int)BGY>>8, BGPA, BGPB, BGPC, BGPD, noTilesPerRow*8);
+    printf("y: %d|BX: %08x|BY: %08x|PA: %04x|PB: %04x|PC: %04x|PD: %04x\n", gba->IO[VCOUNT], BGX, BGY, BGPA, BGPB, BGPC, BGPD);
 
     bool transparentPixelExists = false;
     bool transparentPixel = false;
@@ -103,9 +103,7 @@ static bool computeBGRotScalScanline(GBA* gba, uint8_t N, uint16_t linebuffer[],
 
         if (x_i >= noTilesPerRow*8 || x_i < 0) {
             if (displayOverflow == 0) transparentPixel = true;
-                /* Wrap it, in both + and - case it gets set to start/end 
-                 * bitANDing only works as mod for powers of 2, bitmap modes have forced display
-                 * overflow = 0 so the else shouldnt run for them (they dont have sides in powers of 2) */
+                /* Wrap it, in both + and - case it gets set to start/end */
             else x_i&=noTilesPerRow*8 - 1;
         } else transparentPixel = false;
 
@@ -683,11 +681,9 @@ void stepPPU(GBA* gba) {
 					/* Enter VBLANK and render frame */
 					gba->ppuVState = PPU_VBLANK;
 					/* Set VBLANK STAT flag */
-					writeIO_internal(gba, DISPSTAT, STAT | 1, WIDTH_16);
+					gba->IO[DISPSTAT] |= 1;
                     /* If VBLANK IRQ is enabled then request interrupt */
-                    if (STAT >> 3 & 1) {
-                        requestInterrupt(gba, IRQ_LCD_VBLANK);
-                    }
+                    if (STAT >> 3 & 1) requestInterrupt(gba, IRQ_LCD_VBLANK);
 
 					SDLEvents(gba);
 
@@ -699,10 +695,9 @@ void stepPPU(GBA* gba) {
 					SDL_RenderPresent(gba->SDL_Renderer);
 
 
-                   
                     /*
                     uint64_t ticksCurrent = clock_u();
-                    double diff = (1e6/60)-(ticksCurrent-gba->ticksAtLastFrame);
+                    double diff = (1e6/10)-(ticksCurrent-gba->ticksAtLastFrame);
                     //gba->ticksAtLastFrame = ticksCurrent;
                     if (diff > 0) usleep(diff);
 
