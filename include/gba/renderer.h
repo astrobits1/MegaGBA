@@ -46,6 +46,22 @@ typedef enum {
 	PPU_VBLANK				// }
 } PPU_State;
 
+typedef enum {
+    PALETTE_16_16_4BIT,
+    PALETTE_256_1_8BIT
+} PALETTE_INDEX_MODE;
+
+typedef enum {
+    OBJ_SHAPE_SQUARE,
+    OBJ_SHAPE_HORIZONTAL,
+    OBJ_SHAPE_VERTICAL
+} OBJ_SHAPE;
+
+typedef enum {
+    OBJ_VRAM_MAPPING_2DIM,
+    OBJ_VRAM_MAPPING_1DIM
+} OBJ_VRAM_MAPPING;
+
 void initialisePPU(GBA* gba);
 /* Step the PPU State */
 void stepPPU(GBA* gba);

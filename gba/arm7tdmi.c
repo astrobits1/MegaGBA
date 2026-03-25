@@ -2202,15 +2202,20 @@ static void handleInterrupts(GBA* gba) {
     uint16_t IF_data = readIO_internal(gba, IF, WIDTH_16);
 
     /* No interrupts enabled and requested */
-    if ((IE_data & IF_data) == 0) return;
+    if ((IE_data & IF_data) == 0) {
+        clearAsyncExceptionRequest(gba, CPU_EXCEP_IRQ);
+        return;
+    }
 
     /* If even a single interrupt is enabled and requested, CPU is resumed if halted
      * IME or CPSR I bit are not checked, but they may prevent IRQ jump anyway */
     gba->halted = false;
     /* Check IME, CPU IRQ enable check is handled by the exception handler */
-    if ((readIO_internal(gba, IME, WIDTH_16) & 1) == 0) return;
+    if ((readIO_internal(gba, IME, WIDTH_16) & 1) == 0) {
+        clearAsyncExceptionRequest(gba, CPU_EXCEP_IRQ);
+        return;
+    }
 
-    bool requested = false;
     /* Check IF and IE */
     for (int i=0; i<16; i++) {
         if ((IE_data >> i & 1) && (IF_data >> i & 1)) {
@@ -2218,13 +2223,9 @@ static void handleInterrupts(GBA* gba) {
              * Priorities are handled by the software. 
              * IF bit is not cleared automatically and requires manual acknowledgement */
             requestAsyncException(gba, CPU_EXCEP_IRQ);
-            /* Wake up CPU if it was halted */
-            requested = true;
             break;
         }
     }
-
-    if (!requested) clearAsyncExceptionRequest(gba, CPU_EXCEP_IRQ);
 }
 
 /* -------------------------------------------------------------------- */

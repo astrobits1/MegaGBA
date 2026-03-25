@@ -5,11 +5,7 @@
 #include <gba/renderer.h>
 #include <SDL2/SDL.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <string.h>
 #include <sys/time.h>
-#include <time.h>
 
 
 /* Utility */
@@ -57,17 +53,17 @@ void SDLEvents(GBA* gba) {
         } else if (event.type == SDL_KEYDOWN && event.key.repeat == 0) {
             /* Handle keydown by updating KEYINPUT */
             switch (event.key.keysym.scancode) {
-                case SDL_SCANCODE_S: KEYINPUT_RESET(7); break;
-                case SDL_SCANCODE_W: KEYINPUT_RESET(6); break;
-                case SDL_SCANCODE_A: KEYINPUT_RESET(5); break;
-                case SDL_SCANCODE_D: KEYINPUT_RESET(4); break;
+                case SDL_SCANCODE_DOWN: KEYINPUT_RESET(7); break;
+                case SDL_SCANCODE_UP: KEYINPUT_RESET(6); break;
+                case SDL_SCANCODE_LEFT: KEYINPUT_RESET(5); break;
+                case SDL_SCANCODE_RIGHT: KEYINPUT_RESET(4); break;
 
                 case SDL_SCANCODE_Z: KEYINPUT_RESET(0); break;
                 case SDL_SCANCODE_X: KEYINPUT_RESET(1); break;
                 case SDL_SCANCODE_RETURN: KEYINPUT_RESET(3); break;
                 case SDL_SCANCODE_TAB: KEYINPUT_RESET(2); break;
-                case SDL_SCANCODE_I: KEYINPUT_RESET(9); break;
-                case SDL_SCANCODE_O: KEYINPUT_RESET(8); break;
+                case SDL_SCANCODE_A: KEYINPUT_RESET(9); break;
+                case SDL_SCANCODE_S: KEYINPUT_RESET(8); break;
 
                 default: break;
             }
@@ -75,17 +71,17 @@ void SDLEvents(GBA* gba) {
         } else if (event.type == SDL_KEYUP && event.key.repeat == 0) {
             /* Handle keyup by updating KEYINPUT */
             switch (event.key.keysym.scancode) {
-                case SDL_SCANCODE_S: KEYINPUT_SET(7); break;
-                case SDL_SCANCODE_W: KEYINPUT_SET(6); break;
-                case SDL_SCANCODE_A: KEYINPUT_SET(5); break;
-                case SDL_SCANCODE_D: KEYINPUT_SET(4); break;
+                case SDL_SCANCODE_DOWN: KEYINPUT_SET(7); break;
+                case SDL_SCANCODE_UP: KEYINPUT_SET(6); break;
+                case SDL_SCANCODE_LEFT: KEYINPUT_SET(5); break;
+                case SDL_SCANCODE_RIGHT: KEYINPUT_SET(4); break;
 
                 case SDL_SCANCODE_Z: KEYINPUT_SET(0); break;
                 case SDL_SCANCODE_X: KEYINPUT_SET(1); break;
                 case SDL_SCANCODE_RETURN: KEYINPUT_SET(3); break;
                 case SDL_SCANCODE_TAB: KEYINPUT_SET(2); break;
-                case SDL_SCANCODE_I: KEYINPUT_SET(9); break;
-                case SDL_SCANCODE_O: KEYINPUT_SET(8); break;
+                case SDL_SCANCODE_A: KEYINPUT_SET(9); break;
+                case SDL_SCANCODE_S: KEYINPUT_SET(8); break;
 
                 default: break;
             }
