@@ -9,14 +9,20 @@ static inline void latchDISPCNT(GBA* gba) {
     gba->latchedDISPCNT = DISPCNT;
 }
 
-static inline uint16_t readPaletteRAM(GBA* gba, uint8_t index) {
+static inline uint16_t readBGPaletteRAM(GBA* gba, uint8_t index) {
     /* Returns rgb555 - bit15 is always 0 */
-    return gba->PaletteRAM[2*index] | ((gba->PaletteRAM[2*index+1] & ~(1<<15)) << 8);
+    return gba->PaletteRAM[2*index] | ((gba->PaletteRAM[2*index+1] & ~(1<<7)) << 8);
 }
+
+static inline  uint16_t readSpritePaletteRAM(GBA* gba, uint8_t index) {
+    /* Returns rgb555 - bit15 is always 0 */
+    return gba->PaletteRAM[0x200+2*index] | ((gba->PaletteRAM[0x200+2*index+1] & ~(1<<7)) << 8);
+}
+
 
 static inline uint8_t readVRAM_8(GBA* gba, uint32_t address) {
     /* VRAM open bus */
-    if (address > 0x17FFF) return 0;
+    if (address > VRAM_96KB_END-VRAM_96KB) return 0;
     return gba->VRAM[address];
 }
 
@@ -33,11 +39,12 @@ static inline uint64_t readVRAM_64(GBA* gba, uint32_t address) {
 }
 
 static inline uint8_t readOAM_8(GBA* gba, uint32_t address) {
+    if (address > OAM_1KB_END-OAM_1KB) return 0;
     return gba->OAM[address];
 }
 
 static inline uint16_t readOAM_16(GBA* gba, uint32_t address) {
-    return gba->OAM[address] | (gba->OAM[address+1] << 8);
+    return readOAM_8(gba, address) | (readOAM_8(gba, address+1) << 8);
 }
 
 static void repeatLoadFramebuffer(GBA* gba, uint16_t rgb, uint16_t* start, uint32_t size) {
@@ -111,6 +118,7 @@ static bool checkSpriteVisibility(GBA* gba, uint8_t height, uint8_t width, uint1
         }
     }
 
+    //printf("y rendering: %d\n", y_rendering);
     if (x_obj >= 240) {
         /* X out of screen */
         if (width*8 > 512-x_obj) {
@@ -130,28 +138,44 @@ static uint64_t getSpriteRowData_8bit(GBA* gba, uint8_t mappingType, uint32_t ti
 
     uint8_t noTileRowsBefore = (y_objInternal & ~0b111)/8;
     /* 64 bytes per tile, in incremements of 2 tile index per tile */
+    uint8_t y_tile = y_objInternal & 0b111;
 
     if (mappingType == OBJ_VRAM_MAPPING_1DIM) {
         /* 1 dimensional indexing */
-        uint32_t offset = tileIndex*32 + width*noTileRowsBefore*64 + tileInRow*64;
-        uint32_t internalYOffset = y_objInternal*8;
+        uint32_t offset = ((tileIndex+2*width*noTileRowsBefore+2*tileInRow)&0x3FF)*32;
+        uint32_t internalYOffset = y_tile*8;
 
         return readVRAM_64(gba, tileDataBase + offset + internalYOffset);
     } else {
         /* 2 dimensional indexing *
          * Bit 0 is ignored */
         tileIndex &= ~1;
-        uint32_t offset = tileIndex*32 + noTileRowsBefore*0x20*32 + tileInRow*64;
-        uint32_t internalYOffset = y_objInternal*8;
+        uint32_t offset = ((tileIndex+noTileRowsBefore*0x20+2*tileInRow)&0x3FF)*32;
+        uint32_t internalYOffset = y_tile*8;
 
         return readVRAM_64(gba, tileDataBase + offset + internalYOffset); 
     }
 }
 
-static uint32_t getSpriteRowData_4bit(GBA* gba, uint8_t mappingType, uint32_t tileDataBase, uint16_t tileIndex, uint8_t height, uint16_t width, uint8_t tileInRow, uint8_t y_objInternal) {
+static uint32_t getSpriteRowData_4bit(GBA* gba, uint8_t mappingType, uint32_t tileDataBase, uint16_t tileIndex, uint16_t width, uint8_t tileInRow, uint8_t y_objInternal) {
     /* Returns tile data row for given parameters in 4 bit 16/16 palette indexing mode */
+    uint8_t noTileRowsBefore = (y_objInternal & ~0b111)/8;
+    uint8_t y_tile = y_objInternal & 0b111;
+    /* 32 bytes per tile */
 
-    return 0;
+    if (mappingType == OBJ_VRAM_MAPPING_1DIM) {
+        /* 1 dimensional indexing */
+        uint32_t offset = ((tileIndex+width*noTileRowsBefore+tileInRow)&0x3FF)*32;
+        uint32_t internalYOffset = y_tile*4;
+
+        return readVRAM_32(gba, tileDataBase + offset + internalYOffset);
+    } else {
+        /* 2 dimensional indexing */
+        uint32_t offset = ((tileIndex+noTileRowsBefore*0x20+tileInRow)&0x3FF)*32;
+        uint32_t internalYOffset = y_tile*4;
+
+        return readVRAM_32(gba, tileDataBase + offset + internalYOffset); 
+    }
 }
 
 
@@ -170,17 +194,19 @@ static bool computeSpriteScanline(GBA* gba, uint16_t linebuffer[], uint8_t minPr
      * OAM priority will overlap a low BG priority and high OAM priority. 
      * On real hardware this causes garbage to be rendered */
     for (int p=maxPriority; p>=minPriority; p--) {
+        //printf("BG Priority: %d\n", p);
         uint16_t currentlinebuffer[240];
         /* Set all palettes to transparent by default */
-        memset(currentlinebuffer, 1<<15, 240*sizeof(uint16_t));
-
-        for (int i=0; i<128; i++) {
+        repeatLoadFramebuffer(gba, 1<<15, currentlinebuffer, 240);
+        
+        for (int i=127; i>=0; i--) {
+            //printf("OAM index: %d\n", i);
             /* Scan OAM for sprites of a certain BG Priority */
             uint32_t oamAddress = i*8;
 
             uint16_t attr0 = readOAM_16(gba, i*8);
-            uint16_t attr1 = readOAM_16(gba, i*8+1);
-            uint16_t attr2 = readOAM_16(gba, i*8+2);
+            uint16_t attr1 = readOAM_16(gba, i*8+2);
+            uint16_t attr2 = readOAM_16(gba, i*8+4);
 
             /* Not same BG Priority */
             if ((attr2 >> 10 & 0b11) != p) continue;
@@ -197,6 +223,8 @@ static bool computeSpriteScanline(GBA* gba, uint16_t linebuffer[], uint8_t minPr
 
             uint16_t tileIndex = attr2 & 0x3FF;
             uint8_t paletteNum = attr2 >> 12 & 0xF;         /* For 16/16 palettes only */
+            bool completed = false;
+
 
             if ((attr0 >> 8 & 1)) {
                 /* Rotation and Scaling */
@@ -213,31 +241,57 @@ static bool computeSpriteScanline(GBA* gba, uint16_t linebuffer[], uint8_t minPr
                 bool inBounds = checkSpriteVisibility(gba, height, width, x_obj, y_obj, &y_objInternal);
                 if (!inBounds) continue;
 
+                //printf("a0: %04x|a1: %04x|a2: %04x|adr: %08x\n", attr0, attr1, attr2, 0x07000000+i*8);
+                //printf("xObj: %d | yObj: %d | tileIndex: %d | h: %d | w: %d\n", x_obj, y_obj, tileIndex, height, width);
+
                 /* This sprite must be rendered, and we know its exact internal Y */
                 spriteRendered = true;
                 uint8_t hFlip = attr1 >> 12 & 1;
                 uint8_t vFlip = attr1 >> 13 & 1;
 
                 uint8_t noTileRowsBefore = (y_objInternal & ~0b111)/8;
+                uint8_t startTile = 0;
+                uint8_t startPixel = 0;
 
-                for (int tile=0; tile<width; tile++) {
+                if (x_obj >= 240) {
+                    /* Some wrap around is happening as we are still in horizontal bounds */
+                    uint16_t noPixelsToSkip = 512-x_obj;
+                    startTile = (noPixelsToSkip & ~0b111)/8;
+                    startPixel = noPixelsToSkip & 0b111;
+                }
+
+                for (int tile=startTile; tile<width; tile++) {
+                    uint64_t rowData;
+                    uint8_t yInternal = vFlip ? (height*8-1)-y_objInternal : y_objInternal;
+
                     if (paletteMode == PALETTE_256_1_8BIT) {
-                        uint8_t yInternal = vFlip ? (height*8-1)-y_objInternal : y_objInternal;
-                        uint64_t rowData = getSpriteRowData_8bit(gba, vramMapping, tileDataBase, tileIndex, width, hFlip ? (width-1)-tile : tile, yInternal);
-
-                        for (uint8_t xInternal=0; xInternal<8; xInternal++) {
-                            uint8_t xReal = x_obj+tile*8+xInternal;
-                            uint8_t paletteIndex = rowData>>((hFlip?(7-xInternal):xInternal)*8)&0xFF;
-                            uint16_t rgb = readPaletteRAM(gba, paletteIndex);
-
-                            if (paletteIndex == 0) rgb |= 1<<15;
-                            currentlinebuffer[xReal] = rgb;
-                        }
-                        
+                        rowData = getSpriteRowData_8bit(gba, vramMapping, tileDataBase, tileIndex, width, hFlip ? (width-1)-tile : tile, yInternal);                        
                     } else {
-                        printf("Cannot render 16/16 sprites\n");
-                        break;
+                        rowData = getSpriteRowData_4bit(gba, vramMapping, tileDataBase, tileIndex, width, hFlip ? (width-1)-tile : tile, yInternal); 
                     }
+
+                    for (int xInternal = tile==startTile ? startPixel:0; xInternal<8; xInternal++) {
+                        uint8_t xReal = (x_obj>=240?0:x_obj)+(tile-startTile)*8+xInternal-startPixel;
+                        uint8_t paletteIndex;
+                        uint16_t rgb;
+
+                        if (paletteMode == PALETTE_256_1_8BIT) {
+                            paletteIndex = rowData>>((hFlip?(7-xInternal):xInternal)*8)&0xFF;
+                            rgb = readSpritePaletteRAM(gba, paletteIndex);
+                        } else {
+                            paletteIndex = rowData>>((hFlip?(7-xInternal):xInternal)*4)&0xF;
+                            rgb = readSpritePaletteRAM(gba, 16*paletteNum+paletteIndex);
+                        }
+
+                        //printf("xReal: %d|p: %d||pn: %d|c: %04x\n", xReal, paletteIndex, paletteNum, rgb);
+
+                        if (paletteIndex == 0) rgb |= 1<<15;
+                        currentlinebuffer[xReal] = rgb;
+
+                        if (xReal == WIDTH_PX-1) {completed = true; break;}
+                    }
+                    
+                    if (completed) break;
                 }
             }
         }
@@ -250,8 +304,6 @@ static bool computeSpriteScanline(GBA* gba, uint16_t linebuffer[], uint8_t minPr
                 linebuffer[x] = currentlinebuffer[x];
             }
         }
-
-
     }
     return spriteRendered;
 }
@@ -272,7 +324,7 @@ static uint16_t getBGAffinePalette_M1_M2(GBA* gba, uint32_t mapDataBase, uint32_
      * each pixel row is 8 bytes and each pixel has 1 byte 256/1 palette index */
     uint32_t pixelRowBase = tileDataBase + tileIndex*64 + pixelRow*8;
     uint8_t pixelPalette = readVRAM_8(gba, pixelRowBase + pixel);
-    uint16_t rgb = readPaletteRAM(gba, pixelPalette);
+    uint16_t rgb = readBGPaletteRAM(gba, pixelPalette);
 
     rgb &= ~(1<<15);
     if (pixelPalette == 0) rgb |= 1 << 15;
@@ -291,7 +343,7 @@ static uint16_t getBGAffinePalette_M3(GBA* gba, uint32_t _, uint32_t __, int32_t
 static uint16_t getBGAffinePalette_M4(GBA* gba, uint32_t mapDataBase, uint32_t _, int32_t x_i, int32_t y_i, uint16_t noTilesPerRow) {
 
 	uint8_t index = gba->VRAM[mapDataBase + 240*y_i + x_i];
-    uint16_t rgb = readPaletteRAM(gba, index);
+    uint16_t rgb = readBGPaletteRAM(gba, index);
 
     rgb &= ~(1<<15);
     return rgb;
@@ -528,12 +580,12 @@ static bool computeBGTextScanline(GBA* gba, uint8_t N, uint16_t linebuffer[]) {
                 if (colorDepth == PALETTE_256_1_8BIT) {
                     /* 8 bit colour depth - 256/1 palette - 64 bytes/tile */
                     pixelPalette = readVRAM_8(gba, rowStartAddress+j);
-                    rgb = readPaletteRAM(gba, pixelPalette);
+                    rgb = readBGPaletteRAM(gba, pixelPalette);
                 } else {
                     /* 4 bit colour depth - 16/16 palette - 32 bytes/tile */
                     uint8_t paletteByte = readVRAM_8(gba, rowStartAddress+((j&(~1))/2));
                     pixelPalette = j&1 ? paletteByte >> 4 : paletteByte & 0xF;
-                    rgb = readPaletteRAM(gba, 16*paletteNum+pixelPalette);
+                    rgb = readBGPaletteRAM(gba, 16*paletteNum+pixelPalette);
                 }
             } else {
                 /* If tile is located in OBJ space for mode 0/1/2 then BG reads fail
@@ -635,44 +687,46 @@ static void stackLayers(GBA* gba, bool exclude[], uint8_t mode[], uint16_t lineb
     repeatLoadFramebuffer(gba, (uint16_t)(1 << 15), linebuffer, 240);
 
     bool found = getHighestPriorityBG(gba, &N, exclude);
-    if (!found) {
-        /* No BG layer enabled or available */
-        return;
-    } 
+    if (found) { 
+        bool transparentPixelExists = false; 
+        
+        do {
+            transparentPixelExists = false;
 
-    bool transparentPixelExists = false; 
-    
-    do {
-        transparentPixelExists = false;
-
-        uint16_t currentlinebuffer[240];
-        if (mode[N] == 1) {
-            /* Text mode */
-            computeBGTextScanline(gba, N, currentlinebuffer);
-        } else {
-            /* Rotation/Scaling mode */
-            computeBGRotScalScanline_M1_M2(gba, N, currentlinebuffer);
-        }
-
-        /* Fill transparent pixels left over from previous compositions */
-        for (int x=0; x<240; x++) {
-            /* If bit 15 is set, pixel is transparent */
-            if ((linebuffer[x] >> 15) & 1) {
-                linebuffer[x] = currentlinebuffer[x];
-                if ((linebuffer[x] >> 15) & 1) transparentPixelExists = true;
+            uint16_t currentlinebuffer[240];
+            if (mode[N] == 1) {
+                /* Text mode */
+                computeBGTextScanline(gba, N, currentlinebuffer);
+            } else {
+                /* Rotation/Scaling mode */
+                computeBGRotScalScanline_M1_M2(gba, N, currentlinebuffer);
             }
-        }
 
-        /* Exclude last BG */
-        exclude[N] = true;
-        found = getHighestPriorityBG(gba, &N, exclude);
+            /* Fill transparent pixels left over from previous compositions */
+            for (int x=0; x<240; x++) {
+                /* If bit 15 is set, pixel is transparent */
+                if ((linebuffer[x] >> 15) & 1) {
+                    linebuffer[x] = currentlinebuffer[x];
+                    if ((linebuffer[x] >> 15) & 1) transparentPixelExists = true;
+                }
+            }
 
-        /* Layers cannot be resolved anymore */
-        if (!found) break;
+            /* Exclude last BG */
+            exclude[N] = true;
+            found = getHighestPriorityBG(gba, &N, exclude);
 
-    } while (transparentPixelExists);
-    /* Transparent pixel exists, resolve by layering till there are no transparent pixels
-     * or we have exhausted available layers */
+            /* Layers cannot be resolved anymore */
+            if (!found) break;
+
+        } while (transparentPixelExists);
+        /* Transparent pixel exists, resolve by layering till there are no transparent pixels
+         * or we have exhausted available layers */
+    }
+
+    if (gba->latchedDISPCNT >> 12 & 1) {
+        /* Force all sprites above BG for now (temp) */
+        computeSpriteScanline(gba, linebuffer, 0, 3, 0x10000);
+    }
 }
 
 static void renderTransparentScanline(GBA* gba) {
@@ -686,7 +740,7 @@ static void renderLinebuffer(GBA* gba, uint16_t linebuffer[]) {
      * Transparent pixels are set to first index in first palette.
      * This step will come after sprite layering when its implemented */
 
-    uint16_t backdrop = readPaletteRAM(gba, 0);
+    uint16_t backdrop = readBGPaletteRAM(gba, 0);
 
     for (int x=0; x<240; x++) {
         uint16_t rgb = linebuffer[x];

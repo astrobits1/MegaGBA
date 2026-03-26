@@ -91,6 +91,15 @@ typedef enum {
     BG3Y_L      = 0x3C,
     BG3Y_H      = 0x3E,
 
+    DMA0CNT_L   = 0xB8,
+    DMA0CNT_H   = 0xBA,
+    DMA1CNT_L   = 0xC4,
+    DMA1CNT_H   = 0xC6,
+    DMA2CNT_L   = 0xD0,
+    DMA2CNT_H   = 0xD2,
+    DMA3CNT_L   = 0xDC,
+    DMA3CNT_H   = 0xDE,
+
     KEYINPUT    = 0x130,
 
     IE          = 0x200,

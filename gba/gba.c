@@ -346,7 +346,9 @@ uint32_t busRead(GBA* gba, uint32_t address, uint8_t size) {
 	} else if (address >= PALETTE_RAM_1KB && address <= PALETTE_RAM_1KB_END) {
 		/* Read from Palette RAM */
 		ptr = &gba->PaletteRAM[address - PALETTE_RAM_1KB];	
-	}
+	} else if (address >= OAM_1KB && address <= OAM_1KB_END) {
+        ptr = &gba->OAM[address - OAM_1KB];
+    }
 
     if (ptr == NULL) return 0;
     return readMem(gba, ptr, size);
@@ -407,7 +409,19 @@ void busWrite(GBA* gba, uint32_t address, uint32_t data, uint8_t size) {
             data = (data << 8) | data;
             size = WIDTH_16;
 		}
-	}
+	} else if (address >= OAM_1KB && address <= OAM_1KB_END) {
+        ptr = &gba->OAM[address - OAM_1KB];
+
+		/* OAM only supports 16 and 32 bit writes, writing a byte to the addressed
+		 * halfword is going to mirror it to both upper and lower byte */
+		if (size == WIDTH_8) {
+			/* Halfword aligned */
+			ptr = &gba->OAM[(address & ~1) - OAM_1KB];
+            data = (data << 8) | data;
+            size = WIDTH_16;
+		}
+
+    }
 
     if (ptr == NULL) return;
     writeMem(gba, ptr, data, size);
@@ -498,6 +512,10 @@ static void writeIO_byte(GBA* gba, uint32_t ioaddr, uint8_t data) {
          * will be 'acknowledged' and cleared in IF if they were set */
         gba->IO[ioaddr] &= ~data;
         return;
+    } else if (ioaddr >= DMA0CNT_L && ioaddr <= DMA0CNT_H) {
+        printf("DMA0CNT written\n");
+    } else if (ioaddr >= DMA3CNT_L && ioaddr <= DMA3CNT_H) {
+        printf("DMA3CNT written\n");
     }
 
 
