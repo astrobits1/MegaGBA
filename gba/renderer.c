@@ -193,7 +193,7 @@ static bool computeSpriteScanline(GBA* gba, uint16_t linebuffer[], uint8_t minPr
      * here as we scan all OAM entries for every BG priority number, so higher BG priority and lower
      * OAM priority will overlap a low BG priority and high OAM priority. 
      * On real hardware this causes garbage to be rendered */
-    for (int p=maxPriority; p>=minPriority; p--) {
+    for (int p=minPriority; p>=maxPriority; p--) {
         //printf("BG Priority: %d\n", p);
         uint16_t currentlinebuffer[240];
         /* Set all palettes to transparent by default */
@@ -652,7 +652,7 @@ static bool computeBGTextScanline(GBA* gba, uint8_t N, uint16_t linebuffer[]) {
     return transparentPixelExists;
 }
 
-static bool getHighestPriorityBG(GBA* gba, uint8_t* N, bool exclude[]) {
+static bool getHighestPriorityBG(GBA* gba, uint8_t* N, bool exclude[], uint8_t* priority) {
     /* Return highest priority BG layer that is enabled and not excluded
      * Priority goes from 0-3, 3 being the lowest */
     uint8_t lowestPrio = 4;
@@ -675,6 +675,7 @@ static bool getHighestPriorityBG(GBA* gba, uint8_t* N, bool exclude[]) {
     /* No BG layer available or enabled */
     if (lowestPrio == 4) return false;
 
+    *priority = lowestPrio;
     return true;
 }
 
@@ -683,13 +684,20 @@ static bool getHighestPriorityBG(GBA* gba, uint8_t* N, bool exclude[]) {
 
 static void stackLayers(GBA* gba, bool exclude[], uint8_t mode[], uint16_t linebuffer[]) {
     uint8_t N = 0;  /* 0-3 */
+    uint8_t priority = 3;   /* 0-3 */
+    bool spritesEnabled = (bool)(gba->latchedDISPCNT >> 12 & 1);
+    spritesEnabled = false;
+    int8_t spritePriorityRendered = -1;     /* Not rendered yet */
+
+    /* For mode 0-2 */
+#define TILE_DATA_BASE 0x10000
+
     /* Fill linebuffer with transparent */
     repeatLoadFramebuffer(gba, (uint16_t)(1 << 15), linebuffer, 240);
 
-    bool found = getHighestPriorityBG(gba, &N, exclude);
+    bool found = getHighestPriorityBG(gba, &N, exclude, &priority);
     if (found) { 
-        bool transparentPixelExists = false; 
-        
+        bool transparentPixelExists = false;  
         do {
             transparentPixelExists = false;
 
@@ -702,6 +710,29 @@ static void stackLayers(GBA* gba, bool exclude[], uint8_t mode[], uint16_t lineb
                 computeBGRotScalScanline_M1_M2(gba, N, currentlinebuffer);
             }
 
+            /* Exclude BG we just computed */
+            exclude[N] = true;
+            uint8_t oldPriority = priority;
+            /* Find next BG */
+            found = getHighestPriorityBG(gba, &N, exclude, &priority);
+
+            /* BG Layers cannot be resolved anymore */
+            if (spritesEnabled && (oldPriority != priority || !found)) {
+                /* Shift to a lower priority occured or BG layers were exhausted, 
+                 * stack sprite layers equal to or higher than
+                 * the old priority and merge it with final BG before starting next priority
+                 * composition */
+                /* Every layer higher than spritePriorityRendered has been rendered 
+                 * max and min can be same */
+                uint8_t max = spritePriorityRendered+1;
+                uint8_t min = oldPriority;
+
+                /* Overwrite currentlinebuffer */
+                computeSpriteScanline(gba, currentlinebuffer, min, max, TILE_DATA_BASE);
+
+                spritePriorityRendered = oldPriority;
+            }
+
             /* Fill transparent pixels left over from previous compositions */
             for (int x=0; x<240; x++) {
                 /* If bit 15 is set, pixel is transparent */
@@ -711,22 +742,33 @@ static void stackLayers(GBA* gba, bool exclude[], uint8_t mode[], uint16_t lineb
                 }
             }
 
-            /* Exclude last BG */
-            exclude[N] = true;
-            found = getHighestPriorityBG(gba, &N, exclude);
-
-            /* Layers cannot be resolved anymore */
-            if (!found) break;
-
-        } while (transparentPixelExists);
+        } while (transparentPixelExists && found);
         /* Transparent pixel exists, resolve by layering till there are no transparent pixels
          * or we have exhausted available layers */
+
+        if (spritesEnabled && transparentPixelExists && spritePriorityRendered < 3) {
+            /* BG layers have been exhausted, loop will quit at the end of this 
+             * iteration. Resolve any underlying sprite layers only if they are available */
+            uint16_t currentlinebuffer[240];
+            computeSpriteScanline(gba, currentlinebuffer, 3, spritePriorityRendered+1, TILE_DATA_BASE);
+
+            /* Fill transparent pixels left over from stacked sprite layers if possible */
+            for (int x=0; x<240; x++) {
+                /* If bit 15 is set, pixel is transparent */
+                if ((linebuffer[x] >> 15) & 1) {
+                    linebuffer[x] = currentlinebuffer[x];
+                }
+            }
+
+        } 
+    } else {
+        /* No BG layer enabled, stack all sprites */
+        if (spritesEnabled) computeSpriteScanline(gba, linebuffer, 3, 0, TILE_DATA_BASE);
     }
 
-    if (gba->latchedDISPCNT >> 12 & 1) {
-        /* Force all sprites above BG for now (temp) */
-        computeSpriteScanline(gba, linebuffer, 0, 3, 0x10000);
-    }
+    /* At this point, either all pixels have been resolved and no transparency remains, 
+     * or we exhausted background layers. We also ensured we exhaust any remaining underlying 
+     * sprite layers before exiting */
 }
 
 static void renderTransparentScanline(GBA* gba) {
