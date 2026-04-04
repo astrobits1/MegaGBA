@@ -285,8 +285,11 @@ static bool computeSpriteScanline(GBA* gba, uint16_t linebuffer[], uint8_t minPr
 
                         //printf("xReal: %d|p: %d||pn: %d|c: %04x\n", xReal, paletteIndex, paletteNum, rgb);
 
-                        if (paletteIndex == 0) rgb |= 1<<15;
-                        currentlinebuffer[xReal] = rgb;
+                        if (paletteIndex != 0) {
+                            /* If palette is not transparent then overlay,
+                             * otherwise previous palette remains */
+                            currentlinebuffer[xReal] = rgb;
+                        }
 
                         if (xReal == WIDTH_PX-1) {completed = true; break;}
                     }
@@ -836,7 +839,7 @@ static void renderBGMode2Scanline(GBA* gba) {
     renderLinebuffer(gba, linebuffer);
 }
 
-
+#define TILE_DATA_BASE_BITMAP 0x14000
 
 static void renderBGMode3Scanline(GBA* gba) {
 	/* Mode 3 is a simple bitmap mode with only 1 frame/screen and the pixel data 
@@ -849,14 +852,25 @@ static void renderBGMode3Scanline(GBA* gba) {
      * pixels */
 
     /* BG2 should be enabled */
-    if ((gba->latchedDISPCNT >> 10 & 1) == 0) {
-        renderTransparentScanline(gba);
-        return;
-    }
+    bool BGEnabled = gba->latchedDISPCNT >> 10 & 1;
+    bool spriteEnabled = gba->latchedDISPCNT >> 12 & 1;
 
     uint16_t linebuffer[240];
+    uint8_t spritePriorityMin = 3;
 
-    computeBGRotScalScanline(gba, 2, linebuffer, 0, 0, 30, 20, 0, getBGAffinePalette_M3); 
+    if (!BGEnabled) {
+        repeatLoadFramebuffer(gba, (uint16_t)(1 << 15), linebuffer, 240);
+    } else {
+        computeBGRotScalScanline(gba, 2, linebuffer, 0, 0, 30, 20, 0, getBGAffinePalette_M3);
+
+        uint16_t BGCNT = readIO_internal(gba, BG2CNT, WIDTH_16);
+        spritePriorityMin = BGCNT & 0b11;
+    }
+
+    if (spriteEnabled) {
+        computeSpriteScanline(gba, linebuffer, spritePriorityMin, 0, TILE_DATA_BASE_BITMAP);
+    }
+
     renderLinebuffer(gba, linebuffer); 
 }
 
@@ -871,15 +885,27 @@ static void renderBGMode4Scanline(GBA* gba) {
 	 * Note: Transparent color is the color 0 of BG Palette, currently sprites are not supported */
 
     /* BG2 should be enabled */
-    if ((gba->latchedDISPCNT >> 10 & 1) == 0) {
-        renderTransparentScanline(gba);
-        return;
+    
+    bool BGEnabled = gba->latchedDISPCNT >> 10 & 1;
+    bool spriteEnabled = gba->latchedDISPCNT >> 12 & 1;
+
+    uint16_t linebuffer[240];
+    uint8_t spritePriorityMin = 3;
+	uint32_t base = (gba->latchedDISPCNT >> 4 & 1) ? 0xA000 : 0x0000;
+
+    if (!BGEnabled) {
+        repeatLoadFramebuffer(gba, (uint16_t)(1 << 15), linebuffer, 240);
+    } else {
+        computeBGRotScalScanline(gba, 2, linebuffer, base, 0, 30, 20, 0, getBGAffinePalette_M4);
+
+        uint16_t BGCNT = readIO_internal(gba, BG2CNT, WIDTH_16);
+        spritePriorityMin = BGCNT & 0b11;
     }
 
-	uint32_t base = (gba->latchedDISPCNT >> 4 & 1) ? 0xA000 : 0x0000;
-    uint16_t linebuffer[240];
+    if (spriteEnabled) {
+        computeSpriteScanline(gba, linebuffer, spritePriorityMin, 0, TILE_DATA_BASE_BITMAP);
+    }
 
-    computeBGRotScalScanline(gba, 2, linebuffer, base, 0, 30, 20, 0, getBGAffinePalette_M4);
     renderLinebuffer(gba, linebuffer);
 }
 
@@ -889,17 +915,27 @@ static void renderBGMode5Scanline(GBA* gba) {
      * that are swapable like mode 4. */
 
     /* BG2 should be enabled */
-    if ((gba->latchedDISPCNT >> 10 & 1) == 0) {
-        renderTransparentScanline(gba);
-        return;
+
+    bool BGEnabled = gba->latchedDISPCNT >> 10 & 1;
+    bool spriteEnabled = gba->latchedDISPCNT >> 12 & 1;
+
+    uint16_t linebuffer[240];
+	uint32_t base = (gba->latchedDISPCNT >> 4 & 1) ? 0xA000 : 0x0000;
+    uint8_t spritePriorityMin = 3;
+
+    if (!BGEnabled) {
+        repeatLoadFramebuffer(gba, (uint16_t)(1 << 15), linebuffer, 240);
+    } else {
+        computeBGRotScalScanline(gba, 2, linebuffer, base, 0, 20, 16, 0, getBGAffinePalette_M5);
+
+        uint16_t BGCNT = readIO_internal(gba, BG2CNT, WIDTH_16);
+        spritePriorityMin = BGCNT & 0b11;
     }
 
-	uint32_t base = (gba->latchedDISPCNT >> 4 & 1) ? 0xA000 : 0x0000;
-    uint16_t linebuffer[240];
+    if (spriteEnabled) {
+        computeSpriteScanline(gba, linebuffer, spritePriorityMin, 0, TILE_DATA_BASE_BITMAP);
+    }
 
-
-    //printf("yR: %d|BGX: %d|BGY: %d\n", gba->IO[VCOUNT], gba->internalBG2X >> 8, gba->internalBG2Y >> 8);
-    computeBGRotScalScanline(gba, 2, linebuffer, base, 0, 20, 16, 0, getBGAffinePalette_M5);
     renderLinebuffer(gba, linebuffer);
 }
 
