@@ -472,8 +472,9 @@ static bool computeBGTextScanline(GBA* gba, uint8_t N, uint16_t linebuffer[]) {
 
     /* Extract BG registers from layer no. (N) */
     uint16_t BGCNT = readIO_internal(gba, BG0CNT+2*N, WIDTH_16);
-    uint16_t BGHOFS = readIO_internal(gba, BG0HOFS+2*N, WIDTH_16);
-    uint16_t BGVOFS = readIO_internal(gba, BG0VOFS+2*N, WIDTH_16);
+    uint16_t BGHOFS = readIO_internal(gba, BG0HOFS+4*N, WIDTH_16);
+    uint16_t BGVOFS = readIO_internal(gba, BG0VOFS+4*N, WIDTH_16);
+
 
     /* Identify Character(Tile) data base block and Screen (BG Map) base block 
      * and extract rest of the parameters from BGCNT 
@@ -520,6 +521,7 @@ static bool computeBGTextScanline(GBA* gba, uint8_t N, uint16_t linebuffer[]) {
         }
     }
 
+    //printf("yR: %d | y: %d | HOFS: %d | VOFS: %d\n", yReal, y, BGHOFS, BGVOFS);
     uint8_t pixelRow = y&0b111;                  /* 0-7 within tile */
     uint32_t tileRowsBefore = (y&(~0b111))/8;    /* No. of tile rows before the tile we are on */
     uint32_t byteOffset = tileRowsBefore*32*2;   /* Offset to be applied on mapData base to reach current tile row */
@@ -560,6 +562,7 @@ static bool computeBGTextScanline(GBA* gba, uint8_t N, uint16_t linebuffer[]) {
 
         /* Tile entry in tileMap has been calculated */
         uint16_t tileNumber = tileEntry & 0x3FF;            /* Tile index in tileData */
+        //printf("tN:%d|", tileNumber);
         uint8_t hFlip = tileEntry >> 10 & 1;                /* Horizontal Flip */
         uint8_t vFlip = tileEntry >> 11 & 1;                /* Vertical Flip */
         uint8_t paletteNum = tileEntry >> 12 & 0xF;         /* for 4 bit color depth mode only */
@@ -597,15 +600,20 @@ static bool computeBGTextScanline(GBA* gba, uint8_t N, uint16_t linebuffer[]) {
             /* Offset by startPixel for every tile for framebuffer loading */
             uint8_t xReal = (i-startTile)*8 + (hFlip ? (7-j) : j) - startPixel;
 
+            //printf("xR: %d | i: %d | j: %d | sT: %d | sP: %d | f: %d | HOFS: %d | VOFS: %d\n", xReal, i, j, startTile, startPixel, hFlip, BGHOFS, BGVOFS);
             /* Make sure hFlip is handled correctly with horizontal scrolling
              * on the first tile. We skip some iterations either at the start or end
              * depending on whether we do hFlip or not */
             if (i==startTile && startPixel > 0) {
                 if (hFlip) {
-                    if (j< (8-startPixel)) continue;
+                    if (j > (7-startPixel)) continue;
                 } else {
                     if (j < startPixel) continue;
                 }
+                /* When rendering is being done in reverse for flipped last tile
+                 * skip xReal >= 240 */
+            } else if (xReal >= 240) {
+                continue;
             }
 
             if (pixelPalette == 0) {
@@ -617,10 +625,9 @@ static bool computeBGTextScanline(GBA* gba, uint8_t N, uint16_t linebuffer[]) {
             linebuffer[xReal] = rgb;
 
             /* No need to render the last tile fully if horizontal scrolling % 8 != 0,
-                * stop when the buffer is full */
+                * mark stop when the buffer is full */
             if (xReal == WIDTH_PX-1) {
                 flag = false;
-                break;
             }
         }
 
@@ -649,6 +656,7 @@ static bool computeBGTextScanline(GBA* gba, uint8_t N, uint16_t linebuffer[]) {
         }
     }
 
+    //printf("\n");
     return transparentPixelExists;
 }
 
@@ -686,7 +694,7 @@ static void stackLayers(GBA* gba, bool exclude[], uint8_t mode[], uint16_t lineb
     uint8_t N = 0;  /* 0-3 */
     uint8_t priority = 3;   /* 0-3 */
     bool spritesEnabled = (bool)(gba->latchedDISPCNT >> 12 & 1);
-    spritesEnabled = false;
+    //spritesEnabled = false;
     int8_t spritePriorityRendered = -1;     /* Not rendered yet */
 
     /* For mode 0-2 */
