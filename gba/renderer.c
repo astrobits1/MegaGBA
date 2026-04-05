@@ -250,8 +250,8 @@ static void computeSpriteRotScalScanline(GBA* gba, uint16_t linebuffer[], uint8_
     uint8_t affineParameterGroup = attr1 >> 9 & 0x1F;
 
     if (doubleSize) {
-        printf("Doesnt support double size yet\n");
-        return;
+        //printf("Doesnt support double size yet\n");
+        //return;
     }
     /* Load affine parameters */
     int16_t PA = (int16_t)readOAM_16(gba, affineParameterGroup*0x20+0x6);
@@ -263,10 +263,16 @@ static void computeSpriteRotScalScanline(GBA* gba, uint16_t linebuffer[], uint8_
      * for Y jump (PB and PD) as well as relative affine transformation. 
      * The center of rotation is the center of sprite */
 
-    int32_t x = PA*(-width*4) + PB*(y_objInternal-height*4) + (width*4<<8);
-    int32_t y = PC*(-width*4) + PD*(y_objInternal-height*4) + (height*4<<8);
+    int32_t x, y;
+
+    if (doubleSize) {
+        x = PA*(-width*4) + PB*(y_objInternal-height*4) + (width*2<<8);
+        y = PC*(-width*4) + PD*(y_objInternal-height*4) + (height*2<<8);
+    } else {
+        x = PA*(-width*4) + PB*(y_objInternal-height*4) + (width*4<<8);
+        y = PC*(-width*4) + PD*(y_objInternal-height*4) + (height*4<<8);
+    }
   
-    //printf("w: %d|h: %d|yObjInt: %d\n", width, height, y_objInternal);
     /* Render whole sprite to a buffer first, then sort out visible parts before
      * copying to final linebuffer */
     uint16_t spritebuffer[width*8];
@@ -280,11 +286,11 @@ static void computeSpriteRotScalScanline(GBA* gba, uint16_t linebuffer[], uint8_
 
         /* Handle x or y overflow taking double size into consideration
          * as sprite map size doesnt really change */
-        if (x_i >= width*8/(doubleSize?2:1) || x_i < 0) {
+        if (x_i >= width*(doubleSize?4:8) || x_i < 0) {
             transparentPixel = true;
         }
 
-        if (y_i >= height*8/(doubleSize?2:1) || y_i < 0) {
+        if (y_i >= height*(doubleSize?4:8) || y_i < 0) {
             transparentPixel = true;
         }
 
@@ -293,12 +299,12 @@ static void computeSpriteRotScalScanline(GBA* gba, uint16_t linebuffer[], uint8_
             uint16_t rgb = 0;
             if (paletteMode == 1) {
                 /* 8 bit - 256/1 */
-                uint64_t row = getSpriteRowData_8bit(gba, vramMapping, tileDataBase, tileIndex, width, x_i>>3, y_i);
+                uint64_t row = getSpriteRowData_8bit(gba, vramMapping, tileDataBase, tileIndex, doubleSize?width/2:width, x_i>>3, y_i);
                 paletteIndex = row >> (8*(x_i & 0b111)) & 0xFF;
                 rgb = readSpritePaletteRAM(gba, paletteIndex);
             } else {
                 /* 4 bit - 16/16 */
-                uint32_t row = getSpriteRowData_4bit(gba, vramMapping, tileDataBase, tileIndex, width, x_i>>3, y_i);
+                uint32_t row = getSpriteRowData_4bit(gba, vramMapping, tileDataBase, tileIndex, doubleSize?width/2:width, x_i>>3, y_i);
                 paletteIndex = row >> (4*(x_i & 0b111)) & 0xF;
                 rgb = readSpritePaletteRAM(gba, paletteNum*16+paletteIndex);
             }
@@ -318,17 +324,29 @@ static void computeSpriteRotScalScanline(GBA* gba, uint16_t linebuffer[], uint8_
 
     /* Sprite rendering complete, now copy visible parts to main buffer */
     if (x_obj >= 240) {
-        uint8_t noPixelsToSkip = 512-x_obj;
-        memcpy(linebuffer, &spritebuffer[noPixelsToSkip], sizeof(uint16_t)*(width*8-noPixelsToSkip));
+        uint16_t noPixelsToSkip = 512-x_obj;
+
+        for (uint16_t i=0; i<width*8-noPixelsToSkip; i++) {
+            if (!(spritebuffer[noPixelsToSkip+i] >> 15 & 1)) {
+                linebuffer[i] = spritebuffer[noPixelsToSkip+i];
+            }
+        }
+        //memcpy(linebuffer, &spritebuffer[noPixelsToSkip], sizeof(uint16_t)*(width*8-noPixelsToSkip));
     } else {
-        uint8_t noPixelsToCopy = width*8;
+        uint16_t noPixelsToCopy = width*8;
 
         if (x_obj + width*8 > 240) {
             /* Cutoff near the end */
             noPixelsToCopy -= x_obj + width*8 - 240;
         }
 
-        memcpy(&linebuffer[x_obj], spritebuffer, sizeof(uint16_t)*noPixelsToCopy);
+        for (uint16_t i=0; i<noPixelsToCopy; i++) {
+            if (!(spritebuffer[i] >> 15 & 1)) {
+                linebuffer[x_obj+i] = spritebuffer[i];
+            }
+        }
+
+        //memcpy(&linebuffer[x_obj], spritebuffer, sizeof(uint16_t)*noPixelsToCopy);
     }
 }
 
