@@ -4,6 +4,9 @@
 #include <unistd.h>
 
 
+#define TILE_DATA_BASE_TEXT     0x10000
+#define TILE_DATA_BASE_BITMAP   0x14000
+
 static inline void latchDISPCNT(GBA* gba) {
 	uint16_t DISPCNT = readIO_internal(gba, DISPCNT, WIDTH_16);
     gba->latchedDISPCNT = DISPCNT;
@@ -179,6 +182,155 @@ static uint32_t getSpriteRowData_4bit(GBA* gba, uint8_t mappingType, uint32_t ti
 }
 
 
+static void computeSpriteNormalScanline(GBA* gba, uint16_t linebuffer[], uint8_t height, uint8_t width, uint8_t y_objInternal, uint16_t x_obj, uint16_t attr0, uint16_t attr1, uint16_t attr2, uint32_t tileDataBase, uint8_t vramMapping) {
+    /* Compute a normal non-affine sprite */
+
+    uint8_t hFlip = attr1 >> 12 & 1;
+    uint8_t vFlip = attr1 >> 13 & 1;
+    uint16_t tileIndex = attr2 & 0x3FF;
+    uint8_t paletteNum = attr2 >> 12 & 0xF;         /* For 16/16 palettes only */
+    uint8_t paletteMode = attr0 >> 13 & 1;          /* 256/1 or 16/16 */
+    bool completed = false;
+
+    uint8_t noTileRowsBefore = (y_objInternal & ~0b111)/8;
+    uint8_t startTile = 0;
+    uint8_t startPixel = 0;
+
+    if (x_obj >= 240) {
+        /* Some wrap around is happening as we are still in horizontal bounds */
+        uint16_t noPixelsToSkip = 512-x_obj;
+        startTile = (noPixelsToSkip & ~0b111)/8;
+        startPixel = noPixelsToSkip & 0b111;
+    }
+
+    for (int tile=startTile; tile<width; tile++) {
+        uint64_t rowData;
+        uint8_t yInternal = vFlip ? (height*8-1)-y_objInternal : y_objInternal;
+
+        if (paletteMode == PALETTE_256_1_8BIT) {
+            rowData = getSpriteRowData_8bit(gba, vramMapping, tileDataBase, tileIndex, width, hFlip ? (width-1)-tile : tile, yInternal);                        
+        } else {
+            rowData = getSpriteRowData_4bit(gba, vramMapping, tileDataBase, tileIndex, width, hFlip ? (width-1)-tile : tile, yInternal); 
+        }
+
+        for (int xInternal = tile==startTile ? startPixel:0; xInternal<8; xInternal++) {
+            uint8_t xReal = (x_obj>=240?0:x_obj)+(tile-startTile)*8+xInternal-startPixel;
+            uint8_t paletteIndex;
+            uint16_t rgb;
+
+            if (paletteMode == PALETTE_256_1_8BIT) {
+                paletteIndex = rowData>>((hFlip?(7-xInternal):xInternal)*8)&0xFF;
+                rgb = readSpritePaletteRAM(gba, paletteIndex);
+            } else {
+                paletteIndex = rowData>>((hFlip?(7-xInternal):xInternal)*4)&0xF;
+                rgb = readSpritePaletteRAM(gba, 16*paletteNum+paletteIndex);
+           }
+
+            //printf("xReal: %d|p: %d||pn: %d|c: %04x\n", xReal, paletteIndex, paletteNum, rgb);
+
+            if (paletteIndex != 0) {
+                /* If palette is not transparent then overlay,
+                 * otherwise previous palette remains */
+                linebuffer[xReal] = rgb;
+            }
+
+            if (xReal == WIDTH_PX-1) {completed = true; break;}
+        }
+        
+        if (completed) break;
+    }
+}
+
+static void computeSpriteRotScalScanline(GBA* gba, uint16_t linebuffer[], uint8_t height, uint8_t width, uint8_t y_objInternal, uint16_t x_obj, uint16_t attr0, uint16_t attr1, uint16_t attr2, uint32_t tileDataBase, uint8_t vramMapping) {
+    uint16_t tileIndex = attr2 & 0x3FF;
+    uint8_t paletteNum = attr2 >> 12 & 0xF;         /* For 16/16 palettes only */
+    uint8_t paletteMode = attr0 >> 13 & 1;          /* 256/1 or 16/16 */
+
+    uint8_t doubleSize = attr0 >> 9 & 1;
+    uint8_t affineParameterGroup = attr1 >> 9 & 0x1F;
+
+    if (doubleSize) {
+        printf("Doesnt support double size yet\n");
+        return;
+    }
+    /* Load affine parameters */
+    int16_t PA = (int16_t)readOAM_16(gba, affineParameterGroup*0x20+0x6);
+    int16_t PB = (int16_t)readOAM_16(gba, affineParameterGroup*0x20+0xE);
+    int16_t PC = (int16_t)readOAM_16(gba, affineParameterGroup*0x20+0x16);
+    int16_t PD = (int16_t)readOAM_16(gba, affineParameterGroup*0x20+0x1E);
+
+    /* Affine map origin is top left corner and we instantaneously calculate effect of past scanlines
+     * for Y jump (PB and PD) as well as relative affine transformation. 
+     * The center of rotation is the center of sprite */
+
+    int32_t x = PA*(-width*4) + PB*(y_objInternal-height*4) + (width*4<<8);
+    int32_t y = PC*(-width*4) + PD*(y_objInternal-height*4) + (height*4<<8);
+  
+    //printf("w: %d|h: %d|yObjInt: %d\n", width, height, y_objInternal);
+    /* Render whole sprite to a buffer first, then sort out visible parts before
+     * copying to final linebuffer */
+    uint16_t spritebuffer[width*8];
+    repeatLoadFramebuffer(gba, (uint16_t)(1<<15), spritebuffer, width*8);
+
+    for (uint16_t xReal=0; xReal<width*8; xReal++) {
+        /* x and y represent internal sprite coordinates with origin at top left */
+        int32_t x_i = x >> 8;
+        int32_t y_i = y >> 8;
+        bool transparentPixel = false;
+
+        /* Handle x or y overflow taking double size into consideration
+         * as sprite map size doesnt really change */
+        if (x_i >= width*8/(doubleSize?2:1) || x_i < 0) {
+            transparentPixel = true;
+        }
+
+        if (y_i >= height*8/(doubleSize?2:1) || y_i < 0) {
+            transparentPixel = true;
+        }
+
+        if (!transparentPixel) {
+            uint8_t paletteIndex = 0;
+            uint16_t rgb = 0;
+            if (paletteMode == 1) {
+                /* 8 bit - 256/1 */
+                uint64_t row = getSpriteRowData_8bit(gba, vramMapping, tileDataBase, tileIndex, width, x_i>>3, y_i);
+                paletteIndex = row >> (8*(x_i & 0b111)) & 0xFF;
+                rgb = readSpritePaletteRAM(gba, paletteIndex);
+            } else {
+                /* 4 bit - 16/16 */
+                uint32_t row = getSpriteRowData_4bit(gba, vramMapping, tileDataBase, tileIndex, width, x_i>>3, y_i);
+                paletteIndex = row >> (4*(x_i & 0b111)) & 0xF;
+                rgb = readSpritePaletteRAM(gba, paletteNum*16+paletteIndex);
+            }
+
+            /* Pixel has been read */
+            if (paletteIndex != 0) {
+                spritebuffer[xReal] = rgb;
+            }
+        }
+
+        x = (x_i<<8) | (x&0xFF);
+        x += PA;
+
+        y = (y_i<<8) | (y&0xFF);
+        y += PC;
+    }
+
+    /* Sprite rendering complete, now copy visible parts to main buffer */
+    if (x_obj >= 240) {
+        uint8_t noPixelsToSkip = 512-x_obj;
+        memcpy(linebuffer, &spritebuffer[noPixelsToSkip], sizeof(uint16_t)*(width*8-noPixelsToSkip));
+    } else {
+        uint8_t noPixelsToCopy = width*8;
+
+        if (x_obj + width*8 > 240) {
+            /* Cutoff near the end */
+            noPixelsToCopy -= x_obj + width*8 - 240;
+        }
+
+        memcpy(&linebuffer[x_obj], spritebuffer, sizeof(uint16_t)*noPixelsToCopy);
+    }
+}
 
 static bool computeSpriteScanline(GBA* gba, uint16_t linebuffer[], uint8_t minPriority, uint8_t maxPriority, uint32_t tileDataBase) {
     /* Computes and stacks sprites between minPriority and maxPriority that are enabled on a single
@@ -215,87 +367,38 @@ static bool computeSpriteScanline(GBA* gba, uint16_t linebuffer[], uint8_t minPr
             if ((attr0 >> 10 & 0b11) != 0) continue;
 
             uint8_t y_obj = attr0 & 0xFF;
-            uint8_t paletteMode = attr0 >> 13 & 1;          /* 256/1 or 16/16 */
             uint8_t shape = attr0 >> 14 & 0b11;
+            uint8_t rotationAndScaling = attr0 >> 8 & 1;
+            uint8_t doubleSize = attr0 >> 9 & 1;
 
             uint16_t x_obj = attr1 & 0x1FF;
             uint8_t size = attr1 >> 14 & 0b11;
 
-            uint16_t tileIndex = attr2 & 0x3FF;
-            uint8_t paletteNum = attr2 >> 12 & 0xF;         /* For 16/16 palettes only */
-            bool completed = false;
+            uint8_t height, width, y_objInternal;
+            getSpriteDimensions(size, shape, &width, &height); 
 
-
-            if ((attr0 >> 8 & 1)) {
+            if (rotationAndScaling) {
                 /* Rotation and Scaling */
-                printf("Rotation/Scaling mode not handled\n");
-                continue;
+                if (doubleSize) {
+                    height *= 2;
+                    width *= 2;
+                }
+                bool inBounds = checkSpriteVisibility(gba, height, width, x_obj, y_obj, &y_objInternal);
+                if (!inBounds) continue;
+
+                spriteRendered = true;
+                computeSpriteRotScalScanline(gba, currentlinebuffer, height, width, y_objInternal, x_obj, attr0, attr1, attr2, tileDataBase, vramMapping);
             } else {
                 /* Normal Mode */
                 /* OBJ disabled */
                 if ((attr0 >> 9 & 1)) continue;
 
-                uint8_t height, width, y_objInternal;
-                getSpriteDimensions(size, shape, &width, &height);
-
                 bool inBounds = checkSpriteVisibility(gba, height, width, x_obj, y_obj, &y_objInternal);
                 if (!inBounds) continue;
 
-                //printf("a0: %04x|a1: %04x|a2: %04x|adr: %08x\n", attr0, attr1, attr2, 0x07000000+i*8);
-                //printf("xObj: %d | yObj: %d | tileIndex: %d | h: %d | w: %d\n", x_obj, y_obj, tileIndex, height, width);
-
                 /* This sprite must be rendered, and we know its exact internal Y */
                 spriteRendered = true;
-                uint8_t hFlip = attr1 >> 12 & 1;
-                uint8_t vFlip = attr1 >> 13 & 1;
-
-                uint8_t noTileRowsBefore = (y_objInternal & ~0b111)/8;
-                uint8_t startTile = 0;
-                uint8_t startPixel = 0;
-
-                if (x_obj >= 240) {
-                    /* Some wrap around is happening as we are still in horizontal bounds */
-                    uint16_t noPixelsToSkip = 512-x_obj;
-                    startTile = (noPixelsToSkip & ~0b111)/8;
-                    startPixel = noPixelsToSkip & 0b111;
-                }
-
-                for (int tile=startTile; tile<width; tile++) {
-                    uint64_t rowData;
-                    uint8_t yInternal = vFlip ? (height*8-1)-y_objInternal : y_objInternal;
-
-                    if (paletteMode == PALETTE_256_1_8BIT) {
-                        rowData = getSpriteRowData_8bit(gba, vramMapping, tileDataBase, tileIndex, width, hFlip ? (width-1)-tile : tile, yInternal);                        
-                    } else {
-                        rowData = getSpriteRowData_4bit(gba, vramMapping, tileDataBase, tileIndex, width, hFlip ? (width-1)-tile : tile, yInternal); 
-                    }
-
-                    for (int xInternal = tile==startTile ? startPixel:0; xInternal<8; xInternal++) {
-                        uint8_t xReal = (x_obj>=240?0:x_obj)+(tile-startTile)*8+xInternal-startPixel;
-                        uint8_t paletteIndex;
-                        uint16_t rgb;
-
-                        if (paletteMode == PALETTE_256_1_8BIT) {
-                            paletteIndex = rowData>>((hFlip?(7-xInternal):xInternal)*8)&0xFF;
-                            rgb = readSpritePaletteRAM(gba, paletteIndex);
-                        } else {
-                            paletteIndex = rowData>>((hFlip?(7-xInternal):xInternal)*4)&0xF;
-                            rgb = readSpritePaletteRAM(gba, 16*paletteNum+paletteIndex);
-                        }
-
-                        //printf("xReal: %d|p: %d||pn: %d|c: %04x\n", xReal, paletteIndex, paletteNum, rgb);
-
-                        if (paletteIndex != 0) {
-                            /* If palette is not transparent then overlay,
-                             * otherwise previous palette remains */
-                            currentlinebuffer[xReal] = rgb;
-                        }
-
-                        if (xReal == WIDTH_PX-1) {completed = true; break;}
-                    }
-                    
-                    if (completed) break;
-                }
+                computeSpriteNormalScanline(gba, currentlinebuffer, height, width, y_objInternal, x_obj, attr0, attr1, attr2, tileDataBase, vramMapping);
             }
         }
 
@@ -701,8 +804,6 @@ static void stackLayers(GBA* gba, bool exclude[], uint8_t mode[], uint16_t lineb
     int8_t spritePriorityRendered = -1;     /* Not rendered yet */
 
     /* For mode 0-2 */
-#define TILE_DATA_BASE 0x10000
-
     /* Fill linebuffer with transparent */
     repeatLoadFramebuffer(gba, (uint16_t)(1 << 15), linebuffer, 240);
 
@@ -739,7 +840,7 @@ static void stackLayers(GBA* gba, bool exclude[], uint8_t mode[], uint16_t lineb
                 uint8_t min = oldPriority;
 
                 /* Overwrite currentlinebuffer */
-                computeSpriteScanline(gba, currentlinebuffer, min, max, TILE_DATA_BASE);
+                computeSpriteScanline(gba, currentlinebuffer, min, max, TILE_DATA_BASE_TEXT);
 
                 spritePriorityRendered = oldPriority;
             }
@@ -761,7 +862,7 @@ static void stackLayers(GBA* gba, bool exclude[], uint8_t mode[], uint16_t lineb
             /* BG layers have been exhausted, loop will quit at the end of this 
              * iteration. Resolve any underlying sprite layers only if they are available */
             uint16_t currentlinebuffer[240];
-            computeSpriteScanline(gba, currentlinebuffer, 3, spritePriorityRendered+1, TILE_DATA_BASE);
+            computeSpriteScanline(gba, currentlinebuffer, 3, spritePriorityRendered+1, TILE_DATA_BASE_TEXT);
 
             /* Fill transparent pixels left over from stacked sprite layers if possible */
             for (int x=0; x<240; x++) {
@@ -774,7 +875,7 @@ static void stackLayers(GBA* gba, bool exclude[], uint8_t mode[], uint16_t lineb
         } 
     } else {
         /* No BG layer enabled, stack all sprites */
-        if (spritesEnabled) computeSpriteScanline(gba, linebuffer, 3, 0, TILE_DATA_BASE);
+        if (spritesEnabled) computeSpriteScanline(gba, linebuffer, 3, 0, TILE_DATA_BASE_TEXT);
     }
 
     /* At this point, either all pixels have been resolved and no transparency remains, 
@@ -839,7 +940,6 @@ static void renderBGMode2Scanline(GBA* gba) {
     renderLinebuffer(gba, linebuffer);
 }
 
-#define TILE_DATA_BASE_BITMAP 0x14000
 
 static void renderBGMode3Scanline(GBA* gba) {
 	/* Mode 3 is a simple bitmap mode with only 1 frame/screen and the pixel data 
