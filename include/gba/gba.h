@@ -91,6 +91,16 @@ typedef enum {
     BG3Y_L      = 0x3C,
     BG3Y_H      = 0x3E,
 
+    DMA0SAD     = 0xB0,
+    DMA1SAD     = 0xBC,
+    DMA2SAD     = 0xC8,
+    DMA3SAD     = 0xD4,
+
+    DMA0DAD     = 0xB4,
+    DMA1DAD     = 0xC0,
+    DMA2DAD     = 0xCC,
+    DMA3DAD     = 0xD8,
+
     DMA0CNT_L   = 0xB8,
     DMA0CNT_H   = 0xBA,
     DMA1CNT_L   = 0xC4,
@@ -108,6 +118,15 @@ typedef enum {
 
     HALTCNT     = 0x301
 } IO_REG;
+
+typedef enum {
+    EVENT_PPU
+} GBAEventType;
+
+typedef struct {
+    uint64_t scheduledFor;
+    GBAEventType type;
+} GBAEvent;
 
 struct GBA {
 	/* ------------------ CPU -------------------- */
@@ -178,6 +197,18 @@ struct GBA {
 	uint8_t* VRAM;
 	uint8_t* OAM;
 
+    /* Scheduler */
+    GBAEvent eventStack[16];
+    uint8_t eventCount;
+    uint8_t eventHeadPointer;
+    uint8_t eventBasePointer;
+
+    /* DMA */
+    bool dmaInProgressMaster;
+    bool dmaInProgress[4];
+    uint32_t dmaSAD[4];
+    uint32_t dmaDAD[4];
+    uint32_t dmaWordCount[4];
 	/* ------------------------------------------- */
 
 };
@@ -204,6 +235,14 @@ void startGBAEmulator(GamePak* gamepak, uint8_t* biosROM, size_t biosSize);
 
 void initialiseGBA(GBA* gba, GamePak* gamepak, uint8_t* biosROM, size_t biosSize);
 void freeGBA(GBA* gba);
+
+/* DMA */
+void startDMA(GBA* gba, uint8_t N);
+
+/* Scheduler */
+void pushEvent(GBA* gba, GBAEvent event);
+GBAEvent peekEvent(GBA* gba, uint8_t index);
+GBAEvent popEvent(GBA* gba);
 
 /* Utility */
 unsigned long clock_u();

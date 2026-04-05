@@ -1093,6 +1093,22 @@ void initialisePPU(GBA* gba) {
     /* Initialise framebuffer to full white */
     memset(&gba->framebuffer, 0xFF, WIDTH_PX*HEIGHT_PX*sizeof(uint16_t));
     latchDISPCNT(gba);
+
+    /* Schedule the first PPU sync */
+    GBAEvent e;
+    e.scheduledFor = 960;
+    e.type = EVENT_PPU;
+
+    pushEvent(gba, e);
+}
+
+static void schedulePPU(GBA* gba, uint64_t scheduledFor) {
+    /* Schedule next PPU call at HBLANK/HDRAW end from now */
+    GBAEvent e;
+    e.scheduledFor = gba->cycles+scheduledFor;
+    e.type = EVENT_PPU;
+
+    pushEvent(gba, e);
 }
 
 void stepPPU(GBA* gba) {
@@ -1152,6 +1168,16 @@ void stepPPU(GBA* gba) {
 
                 /* Reques HBLANK interrupt if enabled */
                 if (STAT >> 4 & 1) requestInterrupt(gba, IRQ_LCD_HBLANK);
+
+                /* Check if one or more enabled DMA is waiting to be started at HBLANK */
+                for (int i=0; i<4; i++) {
+                    uint16_t CNT_H = readIO_internal(gba, DMA0CNT_H+i*0xC, WIDTH_16);
+                    if ((CNT_H >> 15 & 1) && (CNT_H >> 12 & 0b11) == 2) {
+                        startDMA(gba, i);
+                    }
+                }
+                /* Schedule next PPU call at HBLANK end 272 cycles from now */
+                schedulePPU(gba, 272);
 			} else {
 				/* HBLANK
 				 * CPU has finished running through HBLANK, now prepare for the next HDRAW,
@@ -1176,6 +1202,14 @@ void stepPPU(GBA* gba) {
                     /* If VBLANK IRQ is enabled then request interrupt */
                     if (STAT >> 3 & 1) {
                         requestInterrupt(gba, IRQ_LCD_VBLANK);
+                    }
+
+                    /* Check if one or more enabled DMA is waiting to be started at VBLANK */
+                    for (int i=0; i<4; i++) {
+                        uint16_t CNT_H = readIO_internal(gba, DMA0CNT_H+i*0xC, WIDTH_16);
+                        if ((CNT_H >> 15 & 1) && (CNT_H >> 12 & 0b11) == 1) {
+                            startDMA(gba, i);
+                        }
                     }
 
 					SDLEvents(gba);
@@ -1203,6 +1237,8 @@ void stepPPU(GBA* gba) {
 					/* Latch DISPCNT if not entering VBLANK */
 					latchDISPCNT(gba);
 				}
+
+                schedulePPU(gba, 960);
 			}
 			break;
 		}
@@ -1218,6 +1254,12 @@ void stepPPU(GBA* gba) {
 				/* Set HBLANK DISPSTAT flag (should be done later) */
 				writeIO_internal(gba, DISPSTAT, STAT | 0b10, WIDTH_16);
 				gba->ppuHState = PPU_HBLANK;
+
+                /* Request HBLANK interrupt if enabled */
+                if (STAT >> 4 & 1) requestInterrupt(gba, IRQ_LCD_HBLANK);
+
+                /* HBLANK DMA not run during VBLANK */
+                schedulePPU(gba, 272);
 			} else if (gba->ppuHState == PPU_HBLANK) {
 				gba->IO[VCOUNT]++;
 				/* Set HDRAW, Clear HBLANK DISPSTAT flag */
@@ -1239,6 +1281,8 @@ void stepPPU(GBA* gba) {
 					/* Last line of VBLANK, unset VBLANK flag in DISPSTAT */
 					writeIO_internal(gba, DISPSTAT, STAT & ~1, WIDTH_16);
 				}
+                
+                schedulePPU(gba, 960);
 			}
 			break;
 		}

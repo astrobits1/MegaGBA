@@ -7,6 +7,10 @@
 #include <stdio.h>
 #include <sys/time.h>
 
+static void reloadDMAInternal(GBA* gba, uint8_t N);
+static void stepDMA(GBA* gba, uint8_t N);
+
+static void handleEvents(GBA* gba);
 
 /* Utility */
 unsigned long clock_u() {
@@ -132,6 +136,15 @@ void initialiseGBA(GBA* gba, GamePak* gamepak, uint8_t* biosBuffer, size_t biosS
 	gba->SDL_Renderer = NULL;
 	gba->SDL_Window = NULL;
 
+    /* Initialise all DMA related arrays of internal registers to 0 for DMA0-3 */
+    gba->dmaInProgressMaster = false;
+    memset(&gba->dmaInProgress, 0, 4*(sizeof(bool)+3*sizeof(uint32_t)));
+
+    /* Initialise scheduler */
+    gba->eventBasePointer = 0;
+    gba->eventHeadPointer = 0;
+    gba->eventCount = 0;
+
 	/* Allocate memory for components */
 	uint8_t* IWRAM 		= (uint8_t*)malloc(0x8000);			// 32 KB
 	uint8_t* EWRAM 		= (uint8_t*)malloc(0x40000); 		// 256 KB
@@ -212,22 +225,22 @@ void startGBAEmulator(GamePak* gamepak, uint8_t* biosBuffer, size_t biosSize) {
 	/* For now, we take each instruction as 1 cycle consumed */
 
 	while (gba.run) {
-		for (int i = 0; i < 960; i++) {
+        if (gba.dmaInProgressMaster) {
+            uint8_t N = 0;
+            for (int i=0; i<4; i++) {
+                if (gba.dmaInProgress[i]) {
+                    N = i;
+                    break;
+                }
+            }
+
+            stepDMA(&gba, N);
+        } else {
 			stepCPU(&gba);
-            gba.cycles++;
-		}
+        }
 
-		/* HDRAW is over, run the PPU to catch up
-		 * without ticking the clock */
-		stepPPU(&gba);
-
-		for (int i = 0; i < 272; i++) {
-			stepCPU(&gba);
-            gba.cycles++;
-		}
-
-		/* HBLANK is over, run the PPU to catch up */
-		stepPPU(&gba);
+        /* Handle scheduler events at CPU instruction boundary or DMA step boundary */
+        handleEvents(&gba);	
 	}
 
     uint64_t ticksFinal = clock_u();
@@ -298,6 +311,8 @@ static void writeMem(GBA* gba, uint8_t* ptr, uint32_t data, uint8_t size) {
 
 uint32_t busRead(GBA* gba, uint32_t address, uint8_t size) {
     uint8_t* ptr = NULL;
+
+    gba->cycles++;
 
 	/* We're reading a 32/16/8 bit value from the given address */
     if (address >= BIOS_ROM_16KB && address <= BIOS_ROM_16KB_END) {
@@ -375,6 +390,9 @@ void busWrite(GBA* gba, uint32_t address, uint32_t data, uint8_t size) {
 	}
 #endif
 
+
+    /* Write cycle */
+    gba->cycles++;
 
 	if (address >= INT_WRAM_32KB && address <= INT_WRAM_32KB_END) {
 		/* Write to internal workram with current size and little endian formatting */
@@ -474,6 +492,9 @@ uint32_t readIO(GBA* gba, uint32_t ioaddr, uint8_t size) {
 
 static void writeIO_byte(GBA* gba, uint32_t ioaddr, uint8_t data) {
     /* Check for read-only registers, and prevent a write */
+    bool DMAxCNT_H_Write = false;
+    uint8_t DMAx;
+
     switch (ioaddr) {
         case VCOUNT: return;
         case DISPSTAT: {
@@ -496,6 +517,38 @@ static void writeIO_byte(GBA* gba, uint32_t ioaddr, uint8_t data) {
 
             goto skipIf;
         }
+        case DMA0CNT_H+1:
+            DMAxCNT_H_Write = true;
+            DMAx = 0;
+            break;
+        case DMA1CNT_H+1:
+            DMAxCNT_H_Write = true;
+            DMAx = 1;
+            break;
+        case DMA2CNT_H+1:
+            DMAxCNT_H_Write = true;
+            DMAx = 2;
+            break;
+        case DMA3CNT_H+1:
+            DMAxCNT_H_Write = true;
+            DMAx = 3;
+            break;
+    }
+
+    if (DMAxCNT_H_Write) {
+        /* Check for enable bit */
+        if (data >> 7 & 1 && !(gba->IO[DMA0CNT_H+DMAx*0xC+1] >> 7 & 1)) {
+            /* Enable is being set high when it was previously low */
+            gba->IO[ioaddr] = data;
+            reloadDMAInternal(gba, DMAx);
+               
+            uint16_t CNT_H = readIO_internal(gba, DMA0CNT_H+DMAx*0xC, WIDTH_16);
+            if ((CNT_H >> 12 & 0b11) == 0) {
+                /* If it must start immediately, start it */
+                startDMA(gba, DMAx);
+            }
+            return;
+        }
     }
 
     /* Update internal registers on every write for BGNXY */
@@ -514,6 +567,7 @@ static void writeIO_byte(GBA* gba, uint32_t ioaddr, uint8_t data) {
         return;
     } else if (ioaddr >= DMA0CNT_L && ioaddr <= DMA0CNT_H) {
         //printf("DMA0CNT written\n");
+        //
     } else if (ioaddr >= DMA3CNT_L && ioaddr <= DMA3CNT_H) {
         //printf("DMA3CNT written\n");
     } else if (ioaddr >= 0x40 && ioaddr <= 0x47) {
@@ -549,4 +603,196 @@ void writeIO(GBA* gba, uint32_t ioaddr, uint32_t data, uint8_t size) {
 	}
 }
 
+/* --------------- Scheduler ----------------- */
 
+void pushEvent(GBA* gba, GBAEvent event) {
+    if (gba->eventCount == 16) {
+        printf("Error: Cannot push event, at max capacity (16)\n");
+        return;
+    }
+    gba->eventStack[gba->eventHeadPointer++] = event;
+
+    gba->eventHeadPointer &= 0xF;
+    gba->eventCount++;
+}
+
+GBAEvent popEvent(GBA* gba) {
+    if (gba->eventCount == 0) {
+        printf("Error: Cannot pop event, at 0 capacity\n");
+        GBAEvent e;
+        return e;
+    }
+
+    GBAEvent event = gba->eventStack[gba->eventBasePointer++];
+
+    gba->eventBasePointer &= 0xF;
+    gba->eventCount--;
+
+    return event;
+}
+
+GBAEvent peekEvent(GBA* gba, uint8_t index) {
+    uint8_t i = (gba->eventBasePointer+index) & 0xF;
+    return gba->eventStack[i];
+}
+
+static void handleEvent(GBA* gba, GBAEvent event) {
+    switch (event.type) {
+        case EVENT_PPU: 
+            stepPPU(gba);
+            break;
+    }
+}
+
+static void handleEvents(GBA* gba) {
+    while (gba->eventCount > 0 && peekEvent(gba, 0).scheduledFor <= gba->cycles) {
+        handleEvent(gba, popEvent(gba));
+    }
+}
+
+
+/* ---------------- DMA ---------------- */
+
+static void reloadDMAInternal(GBA* gba, uint8_t N) {
+     /* Reload SAD, DAD, CNT_L to internal registers */
+    uint32_t source = readIO_internal(gba, DMA0SAD+N*0xC, WIDTH_32);
+    uint32_t dest = readIO_internal(gba, DMA0DAD+N*0xC, WIDTH_32);
+    uint32_t wordCount = readIO_internal(gba, DMA0CNT_L+N*0xC, WIDTH_16);
+
+    if (N != 3) {
+        wordCount &= 0x3FFF;
+        if (wordCount == 0) wordCount = 0x4000;
+
+        dest &= 0x0FFFFFFF;
+
+        if (N == 0) {
+            source &= 0x07FFFFFF;
+        } else {
+            source &= 0x0FFFFFFF;
+        }
+    } else {
+        if (wordCount == 0) wordCount = 0x10000;
+
+        dest &= 0x07FFFFFF;
+        source &= 0x0FFFFFFF;
+    }
+
+    gba->dmaSAD[N] = source;
+    gba->dmaDAD[N] = dest;
+    gba->dmaWordCount[N] = wordCount;
+}
+
+void startDMA(GBA* gba, uint8_t N) {
+    /* DMAN has to be started, internal registers are expected to be loaded in 
+     * Enable bit remains set till the end of the transfer.
+     */
+
+    gba->dmaInProgressMaster = true;
+    gba->dmaInProgress[N] = true;
+
+}
+
+static void stepDMA(GBA* gba, uint8_t N) {
+    /* Step forward DMAN */
+    uint16_t CNT_H = readIO_internal(gba, DMA0CNT_H+N*0xC, WIDTH_16);
+
+    uint8_t destControl = CNT_H >> 5 & 0b11;
+    uint8_t sourceControl = CNT_H >> 7 & 0b11;
+    uint8_t repeat = CNT_H >> 9 & 1;
+    uint8_t wordSize = CNT_H >> 10 & 1 ? 4 : 2;
+    uint8_t triggerIRQ = CNT_H >> 14 & 1;
+
+    uint32_t dest = gba->dmaDAD[N];
+    uint32_t source = gba->dmaSAD[N];
+    uint32_t wordCount = gba->dmaWordCount[N];
+
+    if (wordSize == 4) {
+        /* 32 bit chunk size */
+        uint32_t data = busRead(gba, source, WIDTH_32);
+        busWrite(gba, dest, data, WIDTH_32);
+    } else {
+        /* 16 bit chunk size */
+        uint16_t data = busRead(gba, source, WIDTH_16);
+        busWrite(gba, dest, data, WIDTH_16);
+    }
+
+    switch (destControl) {
+        case 3: /* Increment and Reload */
+        case 0: {
+            /* Increment */
+            gba->dmaDAD[N] += wordSize;
+            break;
+        }
+        case 1: {
+            /* Decrement */
+            gba->dmaDAD[N] -= wordSize;
+            break;
+        }
+    }
+
+    switch (sourceControl) {
+        case 0: {
+            /* Increment */
+            gba->dmaSAD[N] += wordSize;
+            break;
+        }
+        case 1: {
+            /* Decrement */
+            gba->dmaSAD[N] -= wordSize;
+            break;
+        }
+    }
+
+    gba->dmaWordCount[N]--;
+
+    if (gba->dmaWordCount[N] == 0) {
+        /* End of DMA */
+        gba->dmaInProgress[N] = false;
+        if (destControl == 3) {
+            /* Increment and Reload
+             * Reload DAD */
+            uint32_t dest = readIO_internal(gba, DMA0DAD+N*0xC, WIDTH_32);
+            if (N != 3) {
+                dest &= 0x0FFFFFFF;
+            } else {
+                dest &= 0x07FFFFFF;
+            }
+
+            gba->dmaDAD[N] = dest;
+        }
+
+        /* Repeat bit */
+        if (repeat) {
+            /* If repeat is enabled, reload CNT_L internal (wordcount) 
+             * Enable bit is left set */
+            uint32_t wordCount = readIO_internal(gba, DMA0CNT_L+N*0xC, WIDTH_16);
+            if (N != 3) {
+                wordCount &= 0x3FFF;
+                if (wordCount == 0) wordCount = 0x4000;
+            } else if (wordCount == 0) wordCount = 0x10000;
+
+            gba->dmaWordCount[N] = wordCount;
+        } else {
+            /* Reset enable bit */
+            uint32_t ioaddr = DMA0CNT_H+N*0xC;
+            uint16_t CNT_H = readIO_internal(gba, ioaddr, WIDTH_16);
+            writeIO_internal(gba, ioaddr, CNT_H &= ~(1<<15), WIDTH_16);
+        }
+
+        /* Trigger DMA IRQ if enabled */
+        if (triggerIRQ) {
+            requestInterrupt(gba, IRQ_DMA0+N);
+        }
+
+        /* Set the dmaInProgressMaster flag */
+        bool dmaRunning = false;
+        for (int i=0; i<4; i++) {
+            if (gba->dmaInProgress[i]) {
+                dmaRunning = true;
+                break;
+            }
+        }
+
+        if (!dmaRunning) gba->dmaInProgressMaster = false;
+    }
+}

@@ -2259,7 +2259,11 @@ void stepCPU(GBA* gba) {
      * Pipeline is frozen in full state and will resume as is if IRQ jump is not 
      * taken after resuming from halt. Otherwise checkAsyncExceptions will cause IRQ
      * jump and pipeline gets reset to IRQ handler */
-    if (gba->halted) return;
+    if (gba->halted) {
+        /* Fast forward clock to next event if CPU is halted */
+        gba->cycles = peekEvent(gba, 0).scheduledFor;
+        return;
+    }
 
 	if (gba->cpu_state == CPU_STATE_ARM) {
 #if defined(DEBUG_ENABLED) && defined(DEBUG_TRACE_STATE)
