@@ -461,6 +461,7 @@ static uint32_t readIO_byte(GBA* gba, uint32_t ioaddr) {
         return 0;
     } else if ((ioaddr) >= BG2PA && (ioaddr) <= BG3Y_H+1) {
         return 0;
+    /* TO ADD: DMA registers */
     }
 
     return gba->IO[ioaddr];
@@ -708,12 +709,12 @@ static void stepDMA(GBA* gba, uint8_t N) {
 
     if (wordSize == 4) {
         /* 32 bit chunk size */
-        uint32_t data = busRead(gba, source, WIDTH_32);
-        busWrite(gba, dest, data, WIDTH_32);
+        uint32_t data = busRead(gba, source & ~0b11, WIDTH_32);
+        busWrite(gba, dest & ~0b11, data, WIDTH_32);
     } else {
         /* 16 bit chunk size */
-        uint16_t data = busRead(gba, source, WIDTH_16);
-        busWrite(gba, dest, data, WIDTH_16);
+        uint16_t data = busRead(gba, source & ~1, WIDTH_16);
+        busWrite(gba, dest & ~1, data, WIDTH_16);
     }
 
     switch (destControl) {

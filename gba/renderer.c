@@ -1223,7 +1223,6 @@ void stepPPU(GBA* gba) {
 
 
                    
-                    /*
                     uint64_t ticksCurrent = clock_u();
                     double diff = (1e6/60)-(ticksCurrent-gba->ticksAtLastFrame);
                     //gba->ticksAtLastFrame = ticksCurrent;
@@ -1231,7 +1230,6 @@ void stepPPU(GBA* gba) {
 
                     //printf("fps: %g|cycles: %lu\n", 1/((clock_u()-gba->ticksAtLastFrame)/1e6), gba->cycles);
                     gba->ticksAtLastFrame = ticksCurrent;
-                    */
                     
 				} else {
 					/* Latch DISPCNT if not entering VBLANK */
