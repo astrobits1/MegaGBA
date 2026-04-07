@@ -144,7 +144,7 @@ static bool checkDoBrightness(Layer topLayer, uint16_t BCNT) {
 
     if (topLayer.type == LAYER_BACKDROP) {
         if (BCNT >> 5 & 1) doBrightness = true;
-    } else if (topLayer.type == LAYER_SPRITE) {
+    } else if (topLayer.type == LAYER_SPRITE || topLayer.type == LAYER_SEMI_TRANSPARENT_SPRITE) {
         if (BCNT >> 4 & 1) doBrightness = true;
     } else {
         if (BCNT >> topLayer.type & 1) doBrightness = true;
@@ -160,7 +160,10 @@ static bool checkDoAlphaBlend(Compositor* comp, uint8_t topLayerIndex, uint8_t x
     bool firstTarget = false;
     bool secondTarget = false;
 
-    if (topLayer.type == LAYER_SPRITE) {
+    if (topLayer.type == LAYER_SEMI_TRANSPARENT_SPRITE) {
+        /* Force first target for semi transparent sprites regardless of BLDCNT */
+        firstTarget = true;
+    } else if (topLayer.type == LAYER_SPRITE) {
         if (BCNT >> 4 & 1) firstTarget = true;
     } else {
         if (BCNT >> topLayer.type & 1) firstTarget = true;
@@ -176,9 +179,9 @@ static bool checkDoAlphaBlend(Compositor* comp, uint8_t topLayerIndex, uint8_t x
 
             /* Non transparent pixel found (always will be) */
             if (!(pixel >> 15 & 1)) {
-                if (layer.type == LAYER_SPRITE) {
+                if (layer.type == LAYER_SPRITE || layer.type == LAYER_SEMI_TRANSPARENT_SPRITE) {
                     /* Sprite-Sprite blending is forbidden */
-                    if (topLayer.type != LAYER_SPRITE) {
+                    if (topLayer.type != LAYER_SPRITE && topLayer.type != LAYER_SEMI_TRANSPARENT_SPRITE) {
                         if (BCNT >> 12 & 1) secondTarget = true;
                     }
                 } else if (layer.type == LAYER_BACKDROP) {
@@ -243,29 +246,9 @@ static void compositorMerge(Compositor* comp, uint16_t linebuffer[], uint16_t BC
             }
         }
 
+
         /* Check and apply special effects */
-        if (topLayerIndex > 0 && sfxType == 1) {
-            /* Alpha Blending */
-            Layer firstTargetLayer, secondTargetLayer;
-            bool doAlphaBlending = checkDoAlphaBlend(comp, topLayerIndex, i, BCNT, &firstTargetLayer, &secondTargetLayer);
-
-            if (doAlphaBlending) {
-                /* Blend confirmed, blend first target and second target
-                 * and store in topPixel */
-
-                uint8_t EVA = BALPHA & 0x1F;
-                uint8_t EVB = BALPHA >> 8 & 0x1F;
-
-                if (EVA > 16) EVA = 16;
-                if (EVB > 16) EVB = 16;
-
-                uint16_t BGR1 = firstTargetLayer.linebuffer[i];
-                uint16_t BGR2 = secondTargetLayer.linebuffer[i];
-                uint16_t BGR3 = alphaBlend(BGR1, BGR2, EVA, EVB);
-
-                topPixel = BGR3;
-            }
-        } else if (sfxType == 2) {
+        if (sfxType == 2) {
             /* Brightness Increase */
             bool doBrightness = checkDoBrightness(topLayer, BCNT);
             if (doBrightness) {
@@ -273,7 +256,7 @@ static void compositorMerge(Compositor* comp, uint16_t linebuffer[], uint16_t BC
 
                 if (EVY > 16) EVY = 16;
 
-                uint16_t BGR1 = topLayer.linebuffer[i];
+                uint16_t BGR1 = topPixel;
                 uint16_t BGR2 = brightnessIncrease(BGR1, EVY);
 
                 topPixel = BGR2;
@@ -286,12 +269,36 @@ static void compositorMerge(Compositor* comp, uint16_t linebuffer[], uint16_t BC
 
                 if (EVY > 16) EVY = 16;
 
-                uint16_t BGR1 = topLayer.linebuffer[i];
+                uint16_t BGR1 = topPixel;
                 uint16_t BGR2 = brightnessDecrease(BGR1, EVY);
 
                 topPixel = BGR2;
             }
 
+        }
+
+        /* Alpha blending is applied over brightness for semi transparent sprites, 
+         * and only the original pixel is used for first target */
+        if (topLayerIndex > 0 && (sfxType == 1 || topLayer.type == LAYER_SEMI_TRANSPARENT_SPRITE)) {
+            /* Alpha Blending */
+            Layer firstTargetLayer, secondTargetLayer;
+            bool doAlphaBlending = checkDoAlphaBlend(comp, topLayerIndex, i, BCNT, &firstTargetLayer, &secondTargetLayer);
+
+            if (doAlphaBlending) {
+                /* Blend confirmed, blend first target and second target
+                 * and store in topPixel */
+                uint8_t EVA = BALPHA & 0x1F;
+                uint8_t EVB = BALPHA >> 8 & 0x1F;
+
+                if (EVA > 16) EVA = 16;
+                if (EVB > 16) EVB = 16;
+
+                uint16_t BGR1 = firstTargetLayer.linebuffer[i];
+                uint16_t BGR2 = secondTargetLayer.linebuffer[i];
+                uint16_t BGR3 = alphaBlend(BGR1, BGR2, EVA, EVB);
+
+                topPixel = BGR3;
+            }
         }
 
         /* Finally write pixel to buffer */
@@ -425,9 +432,10 @@ static uint32_t getSpriteRowData_4bit(GBA* gba, uint8_t mappingType, uint32_t ti
 }
 
 
-static void computeSpriteNormalScanline(GBA* gba, uint16_t linebuffer[], uint8_t height, uint8_t width, uint8_t y_objInternal, uint16_t x_obj, uint16_t attr0, uint16_t attr1, uint16_t attr2, uint32_t tileDataBase, uint8_t vramMapping) {
+static void computeSpriteNormalScanline(GBA* gba, uint16_t linebuffer[], uint16_t semiTransparentLayerMask[], uint8_t height, uint8_t width, uint8_t y_objInternal, uint16_t x_obj, uint16_t attr0, uint16_t attr1, uint16_t attr2, uint32_t tileDataBase, uint8_t vramMapping) {
     /* Compute a normal non-affine sprite */
 
+    uint8_t mode = attr0 >> 10 & 0b11;
     uint8_t hFlip = attr1 >> 12 & 1;
     uint8_t vFlip = attr1 >> 13 & 1;
     uint16_t tileIndex = attr2 & 0x3FF;
@@ -473,8 +481,16 @@ static void computeSpriteNormalScanline(GBA* gba, uint16_t linebuffer[], uint8_t
 
             if (paletteIndex != 0) {
                 /* If palette is not transparent then overlay,
-                 * otherwise previous palette remains */
-                linebuffer[xReal] = rgb;
+                 * otherwise previous palette remains 
+                 *
+                 * Handle semi transparent case by filling out mask
+                 * as this will be used for layer separation */
+                if (mode == 1) {
+                    semiTransparentLayerMask[xReal] = rgb;
+                } else {
+                    linebuffer[xReal] = rgb;
+                    semiTransparentLayerMask[xReal] = 1 << 15;
+                }
             }
 
             if (xReal == WIDTH_PX-1) {completed = true; break;}
@@ -484,7 +500,8 @@ static void computeSpriteNormalScanline(GBA* gba, uint16_t linebuffer[], uint8_t
     }
 }
 
-static void computeSpriteRotScalScanline(GBA* gba, uint16_t linebuffer[], uint8_t height, uint8_t width, uint8_t y_objInternal, uint16_t x_obj, uint16_t attr0, uint16_t attr1, uint16_t attr2, uint32_t tileDataBase, uint8_t vramMapping) {
+static void computeSpriteRotScalScanline(GBA* gba, uint16_t linebuffer[], uint16_t semiTransparentLayerMask[], uint8_t height, uint8_t width, uint8_t y_objInternal, uint16_t x_obj, uint16_t attr0, uint16_t attr1, uint16_t attr2, uint32_t tileDataBase, uint8_t vramMapping) {
+    uint8_t mode = attr0 >> 10 & 0b11;
     uint16_t tileIndex = attr2 & 0x3FF;
     uint8_t paletteNum = attr2 >> 12 & 0xF;         /* For 16/16 palettes only */
     uint8_t paletteMode = attr0 >> 13 & 1;          /* 256/1 or 16/16 */
@@ -492,10 +509,6 @@ static void computeSpriteRotScalScanline(GBA* gba, uint16_t linebuffer[], uint8_
     uint8_t doubleSize = attr0 >> 9 & 1;
     uint8_t affineParameterGroup = attr1 >> 9 & 0x1F;
 
-    if (doubleSize) {
-        //printf("Doesnt support double size yet\n");
-        //return;
-    }
     /* Load affine parameters */
     int16_t PA = (int16_t)readOAM_16(gba, affineParameterGroup*0x20+0x6);
     int16_t PB = (int16_t)readOAM_16(gba, affineParameterGroup*0x20+0xE);
@@ -571,7 +584,14 @@ static void computeSpriteRotScalScanline(GBA* gba, uint16_t linebuffer[], uint8_
 
         for (uint16_t i=0; i<width*8-noPixelsToSkip; i++) {
             if (!(spritebuffer[noPixelsToSkip+i] >> 15 & 1)) {
-                linebuffer[i] = spritebuffer[noPixelsToSkip+i];
+                if (mode == 1) {
+                    /* Semi-Transparent */
+                    semiTransparentLayerMask[i] = spritebuffer[noPixelsToSkip+i];
+                } else {
+                    /* Normal */
+                    linebuffer[i] = spritebuffer[noPixelsToSkip+i];
+                    semiTransparentLayerMask[i] = 1 << 15;
+                }
             }
         }
         //memcpy(linebuffer, &spritebuffer[noPixelsToSkip], sizeof(uint16_t)*(width*8-noPixelsToSkip));
@@ -585,7 +605,14 @@ static void computeSpriteRotScalScanline(GBA* gba, uint16_t linebuffer[], uint8_
 
         for (uint16_t i=0; i<noPixelsToCopy; i++) {
             if (!(spritebuffer[i] >> 15 & 1)) {
-                linebuffer[x_obj+i] = spritebuffer[i];
+                if (mode == 1) {
+                    /* Semi-Transparent */
+                    semiTransparentLayerMask[x_obj+i] = spritebuffer[i];
+                } else {
+                    /* Normal */
+                    linebuffer[x_obj+i] = spritebuffer[i];
+                    semiTransparentLayerMask[x_obj+i] = 1 << 15;
+                }
             }
         }
 
@@ -593,7 +620,7 @@ static void computeSpriteRotScalScanline(GBA* gba, uint16_t linebuffer[], uint8_
     }
 }
 
-static bool computeSpriteScanline(GBA* gba, uint16_t linebuffer[], uint8_t minPriority, uint8_t maxPriority, uint32_t tileDataBase) {
+static bool computeSpriteScanline(GBA* gba, uint16_t linebuffer[], uint16_t semiTransparentLayerMask[], bool* foundSemiTransparent, uint8_t minPriority, uint8_t maxPriority, uint32_t tileDataBase) {
     /* Computes and stacks sprites between minPriority and maxPriority that are enabled on a single
      * linebuffer, filling the rest with transparent. Returns whether it found atleast a single
      * sprite that is enabled and visible in that range */
@@ -606,6 +633,11 @@ static bool computeSpriteScanline(GBA* gba, uint16_t linebuffer[], uint8_t minPr
      * here as we scan all OAM entries for every BG priority number, so higher BG priority and lower
      * OAM priority will overlap a low BG priority and high OAM priority. 
      * On real hardware this causes garbage to be rendered */
+
+    /* Semi-Transparent sprite pixels must be separated out into their own layer,
+     * and the primary sprite layer must be made transparent in those zones.
+     * We use this mask buffer to keep track of those pixels */
+
     for (int p=minPriority; p>=maxPriority; p--) {
         //printf("BG Priority: %d\n", p);
         uint16_t currentlinebuffer[240];
@@ -625,7 +657,8 @@ static bool computeSpriteScanline(GBA* gba, uint16_t linebuffer[], uint8_t minPr
             if ((attr2 >> 10 & 0b11) != p) continue;
 
             /* Other OBJ modes are not supported for now */
-            if ((attr0 >> 10 & 0b11) != 0) continue;
+            uint8_t mode = attr0 >> 10 & 0b11;
+            if (mode >= 2) continue;
 
             uint8_t y_obj = attr0 & 0xFF;
             uint8_t shape = attr0 >> 14 & 0b11;
@@ -648,7 +681,7 @@ static bool computeSpriteScanline(GBA* gba, uint16_t linebuffer[], uint8_t minPr
                 if (!inBounds) continue;
 
                 spriteRendered = true;
-                computeSpriteRotScalScanline(gba, currentlinebuffer, height, width, y_objInternal, x_obj, attr0, attr1, attr2, tileDataBase, vramMapping);
+                computeSpriteRotScalScanline(gba, currentlinebuffer, semiTransparentLayerMask, height, width, y_objInternal, x_obj, attr0, attr1, attr2, tileDataBase, vramMapping);
             } else {
                 /* Normal Mode */
                 /* OBJ disabled */
@@ -659,7 +692,7 @@ static bool computeSpriteScanline(GBA* gba, uint16_t linebuffer[], uint8_t minPr
 
                 /* This sprite must be rendered, and we know its exact internal Y */
                 spriteRendered = true;
-                computeSpriteNormalScanline(gba, currentlinebuffer, height, width, y_objInternal, x_obj, attr0, attr1, attr2, tileDataBase, vramMapping);
+                computeSpriteNormalScanline(gba, currentlinebuffer, semiTransparentLayerMask, height, width, y_objInternal, x_obj, attr0, attr1, attr2, tileDataBase, vramMapping);
             }
         }
 
@@ -671,6 +704,19 @@ static bool computeSpriteScanline(GBA* gba, uint16_t linebuffer[], uint8_t minPr
                 linebuffer[x] = currentlinebuffer[x];
             }
         }
+    }
+
+    /* 'Hollow' out main linebuffer in places where semi transparent layer separates out */
+    *foundSemiTransparent = false;
+    for (int i=0; i<240; i++) {
+        uint16_t semi = semiTransparentLayerMask[i];
+
+        if (!(semi >> 15 & 1)) {
+            /* Atleast 1 non transparent pixel in semi transparent layer */
+            *foundSemiTransparent = true;
+            linebuffer[i] = 1 << 15;
+        }
+
     }
     return spriteRendered;
 }
@@ -1100,10 +1146,16 @@ static void stackLayers(GBA* gba, bool exclude[], uint8_t mode[], uint16_t lineb
 
                 /* Overwrite currentlinebuffer */
                 Layer spriteLayer = compositorNewLayer(LAYER_SPRITE);
-                bool found = computeSpriteScanline(gba, spriteLayer.linebuffer, min, max, TILE_DATA_BASE_TEXT);
+                Layer semiSpriteLayer = compositorNewLayer(LAYER_SEMI_TRANSPARENT_SPRITE);
+                bool foundSemiTransparent = false;
+
+                bool found = computeSpriteScanline(gba, spriteLayer.linebuffer, semiSpriteLayer.linebuffer, &foundSemiTransparent, min, max, TILE_DATA_BASE_TEXT);
 
                 if (found) {
                     /* BG hasnt been pushed yet */
+                    if (foundSemiTransparent) {
+                        compositorPushBackLayer(&comp, semiSpriteLayer);
+                    }
                     compositorPushBackLayer(&comp, spriteLayer);
                 }
 
@@ -1117,10 +1169,15 @@ static void stackLayers(GBA* gba, bool exclude[], uint8_t mode[], uint16_t lineb
             /* BG layers have been exhausted, loop will quit at the end of this 
              * iteration. Resolve any underlying sprite layers only if they are available */
             Layer spriteLayer = compositorNewLayer(LAYER_SPRITE);
+            Layer semiSpriteLayer = compositorNewLayer(LAYER_SEMI_TRANSPARENT_SPRITE);
+            bool foundSemiTransparent = false;
 
-            bool found = computeSpriteScanline(gba, spriteLayer.linebuffer, 3, spritePriorityRendered+1, TILE_DATA_BASE_TEXT);
+            bool found = computeSpriteScanline(gba, spriteLayer.linebuffer, semiSpriteLayer.linebuffer, &foundSemiTransparent, 3, spritePriorityRendered+1, TILE_DATA_BASE_TEXT);
 
             if (found) {
+                if (foundSemiTransparent) {
+                    compositorPushBackLayer(&comp, semiSpriteLayer);
+                }
                 compositorPushBackLayer(&comp, spriteLayer);
             }
         } 
@@ -1128,8 +1185,15 @@ static void stackLayers(GBA* gba, bool exclude[], uint8_t mode[], uint16_t lineb
         /* No BG layer enabled, stack all sprites */
         if (spritesEnabled) {
             Layer spriteLayer = compositorNewLayer(LAYER_SPRITE);
-            bool found = computeSpriteScanline(gba, spriteLayer.linebuffer, 3, 0, TILE_DATA_BASE_TEXT);
+            Layer semiSpriteLayer = compositorNewLayer(LAYER_SEMI_TRANSPARENT_SPRITE);
+            bool foundSemiTransparent = false;
+
+            bool found = computeSpriteScanline(gba, spriteLayer.linebuffer, semiSpriteLayer.linebuffer, &foundSemiTransparent, 3, 0, TILE_DATA_BASE_TEXT);
+
             if (found) {
+                if (foundSemiTransparent) {
+                    compositorPushBackLayer(&comp, semiSpriteLayer);
+                }
                 compositorPushBackLayer(&comp, spriteLayer);
             }
         }
@@ -1171,8 +1235,17 @@ static void stackLayersBitmap(GBA* gba, uint16_t linebuffer[], uint32_t mapDataB
 
     if (spriteEnabled) {
         Layer spriteLayer = compositorNewLayer(LAYER_SPRITE);
-        computeSpriteScanline(gba, spriteLayer.linebuffer, spritePriorityMin, 0, TILE_DATA_BASE_BITMAP);
-        compositorPushTopLayer(&comp, spriteLayer);
+        Layer semiSpriteLayer = compositorNewLayer(LAYER_SEMI_TRANSPARENT_SPRITE);
+        bool foundSemiTransparent = false;
+
+        bool found = computeSpriteScanline(gba, spriteLayer.linebuffer, semiSpriteLayer.linebuffer, &foundSemiTransparent, spritePriorityMin, 0, TILE_DATA_BASE_BITMAP);
+
+        if (found) {
+            if (foundSemiTransparent) {
+                compositorPushTopLayer(&comp, semiSpriteLayer);
+            }
+            compositorPushTopLayer(&comp, spriteLayer);
+        }
     }
 
     compositorPushBackBackdrop(&comp, readBGPaletteRAM(gba, 0));

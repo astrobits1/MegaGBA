@@ -1984,7 +1984,7 @@ void initialiseLUT_THUMB(GBA* gba) {
 
 void initialiseCPU(GBA* gba) {
 	gba->cpu_state = CPU_STATE_ARM;
-	gba->cpu_mode = CPU_MODE_SYSTEM;
+	gba->cpu_mode = CPU_MODE_SVC;
 
 	/* Preset register values as set by BIOS (we dont use a BIOS file, just emulate
 	 * its behaviour, including BIOS functions) */
@@ -1999,14 +1999,20 @@ void initialiseCPU(GBA* gba) {
 
 	/* Loading R0, R1, R13, R15 and CPSR with BIOS initialised values */
 
+    /*
 	gba->REG[R0]		   = 0x08000000;
 	gba->REG[R1] 		   = 0x000000EA;
 	gba->BANK_SVC[R13_SVC] = 0x03007FE0;
 	gba->BANK_IRQ[R13_IRQ] = 0x03007FA0;
 	gba->REG[R13] 		   = 0x03007F00;
 	gba->CPSR 			   = 0x6000001F; 	// ARM State, System Mode
-	gba->SPSR    		   = 0xFFFFFFFF;    // SPSR cannot be read in USER/SYSTEM mode */ 
+	gba->SPSR    		   = 0xFFFFFFFF;    // SPSR cannot be read in USER/SYSTEM mode 
 	gba->REG[R15] 		   = 0x08000000;
+    */
+
+    gba->CPSR = 0x60000013;
+    gba->SPSR = 0;
+    gba->REG[R15] = 0x00000000;
 
 	/* Setup Lookup Tables */
 	initialiseLUT_ARM(gba);
