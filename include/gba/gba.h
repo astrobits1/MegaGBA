@@ -91,6 +91,10 @@ typedef enum {
     BG3Y_L      = 0x3C,
     BG3Y_H      = 0x3E,
 
+    BLDCNT      = 0x50,
+    BLDALPHA    = 0x52,
+    BLDY        = 0x54,
+
     DMA0SAD     = 0xB0,
     DMA1SAD     = 0xBC,
     DMA2SAD     = 0xC8,

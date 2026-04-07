@@ -50,12 +50,255 @@ static inline uint16_t readOAM_16(GBA* gba, uint32_t address) {
     return readOAM_8(gba, address) | (readOAM_8(gba, address+1) << 8);
 }
 
-static void repeatLoadFramebuffer(GBA* gba, uint16_t rgb, uint16_t* start, uint32_t size) {
+static void repeatLoadFramebuffer(uint16_t rgb, uint16_t* start, uint32_t size) {
     /* Repeat an RG555 colour across framebuffer from a given start point for size no. of pixels */
     for (uint32_t i=0; i<size; i++) {
         start[i] = rgb;
     }
 }
+
+static uint16_t alphaBlend(uint16_t BGR1, uint16_t BGR2, uint8_t EVA, uint8_t EVB) {
+    uint8_t R1 = BGR1 & 0x1F; uint8_t G1 = BGR1 >> 5 & 0x1F; uint8_t B1 = BGR1 >> 10 & 0x1F;
+    uint8_t R2 = BGR2 & 0x1F; uint8_t G2 = BGR2 >> 5 & 0x1F; uint8_t B2 = BGR2 >> 10 & 0x1F;
+
+    uint8_t R3 = (R1*EVA+R2*EVB)/16; uint8_t G3 = (G1*EVA+G2*EVB)/16; uint8_t B3 = (B1*EVA+B2*EVB)/16;
+
+    if (R3>31) R3=31;
+    if (G3>31) G3=31;
+    if (B3>31) B3=31;
+
+    uint16_t BGR3 = (B3 << 10) | (G3 << 5) | R3;
+    return BGR3;
+}
+
+static uint16_t brightnessIncrease(uint16_t BGR1, uint8_t EVY) {
+    uint8_t R1 = BGR1 & 0x1F; uint8_t G1 = BGR1 >> 5 & 0x1F; uint8_t B1 = BGR1 >> 10 & 0x1F;
+    uint8_t R2 = R1+((31-R1)*EVY)/16;
+    uint8_t G2 = G1+((31-G1)*EVY)/16;
+    uint8_t B2 = B1+((31-B1)*EVY)/16;
+
+    uint16_t BGR2 = (B2 << 10) | (G2 << 5) | R2;
+    return BGR2;
+}
+
+static uint16_t brightnessDecrease(uint16_t BGR1, uint8_t EVY) {
+    uint8_t R1 = BGR1 & 0x1F; uint8_t G1 = BGR1 >> 5 & 0x1F; uint8_t B1 = BGR1 >> 10 & 0x1F;
+    uint8_t R2 = R1-(R1*EVY)/16;
+    uint8_t G2 = G1-(G1*EVY)/16;
+    uint8_t B2 = B1-(B1*EVY)/16;
+
+    uint16_t BGR2 = (B2 << 10) | (G2 << 5) | R2;
+    return BGR2;
+}
+
+/* --------------- Compositor --------------- */
+static Compositor compositorNew() {
+    Compositor c;
+    c.layerCount = 0;
+    c.headPointer = 0;
+    c.basePointer = 0;
+    
+    return c;
+}
+static Layer compositorNewLayer(LAYER_TYPE type) {
+    Layer layer;
+    layer.type = type;
+   
+    /* Initialise buffer to transparent */
+    repeatLoadFramebuffer((uint16_t)(1 << 15), layer.linebuffer, 240);
+
+    return layer;
+}
+
+static void compositorPushTopLayer(Compositor* comp, Layer layer) {
+    /* Push layer to compositor top
+     * Head pointer points above the highest occupied cell */
+    comp->layerStack[comp->headPointer++] = layer;
+    comp->headPointer &= COMPOSITOR_STACK_SIZE-1;
+    comp->layerCount++;
+}
+
+static void compositorPushBackLayer(Compositor* comp, Layer layer) {
+    /* Push layer to compositor bottom
+     * Base pointer points to the lowest unoccupied cell */
+    comp->basePointer--;
+    comp->basePointer &= COMPOSITOR_STACK_SIZE-1;
+    comp->layerStack[comp->basePointer] = layer;
+    comp->layerCount++;
+}
+
+static void compositorPushBackBackdrop(Compositor* comp, uint16_t rgb) {
+    Layer backdrop = compositorNewLayer(LAYER_BACKDROP);
+    repeatLoadFramebuffer(rgb, backdrop.linebuffer, 240);
+
+    compositorPushBackLayer(comp, backdrop);
+}
+
+static Layer compositorGetLayer(Compositor* comp, uint8_t index) {
+    /* 0 being the bottom and layerCount-1 being the top */
+    return comp->layerStack[(comp->basePointer+index)&0xF];
+}
+
+static bool checkDoBrightness(Layer topLayer, uint16_t BCNT) {
+    bool doBrightness = false;
+
+    if (topLayer.type == LAYER_BACKDROP) {
+        if (BCNT >> 5 & 1) doBrightness = true;
+    } else if (topLayer.type == LAYER_SPRITE) {
+        if (BCNT >> 4 & 1) doBrightness = true;
+    } else {
+        if (BCNT >> topLayer.type & 1) doBrightness = true;
+    }
+
+    return doBrightness;
+}
+
+static bool checkDoAlphaBlend(Compositor* comp, uint8_t topLayerIndex, uint8_t x, uint16_t BCNT, Layer* firstTargetLayer, Layer* secondTargetLayer) {
+    /* Checks for a given top layer and X whether alpha blending can be done
+     * by checking first and second target from BLDCNT. */
+    Layer topLayer = compositorGetLayer(comp, topLayerIndex);
+    bool firstTarget = false;
+    bool secondTarget = false;
+
+    if (topLayer.type == LAYER_SPRITE) {
+        if (BCNT >> 4 & 1) firstTarget = true;
+    } else {
+        if (BCNT >> topLayer.type & 1) firstTarget = true;
+    }
+
+    if (firstTarget) {
+        /* First target confirmed, search for 2nd target */
+        *firstTargetLayer = topLayer;
+
+        for (uint8_t index = topLayerIndex-1; index >= 0; index--) {
+            Layer layer = compositorGetLayer(comp, index);
+            uint16_t pixel = layer.linebuffer[x];
+
+            /* Non transparent pixel found (always will be) */
+            if (!(pixel >> 15 & 1)) {
+                if (layer.type == LAYER_SPRITE) {
+                    /* Sprite-Sprite blending is forbidden */
+                    if (topLayer.type != LAYER_SPRITE) {
+                        if (BCNT >> 12 & 1) secondTarget = true;
+                    }
+                } else if (layer.type == LAYER_BACKDROP) {
+                    if (BCNT >> 13 & 1) secondTarget = true;
+                } else {
+                    if (BCNT >> (8+layer.type) & 1) secondTarget = true;
+                }
+
+                *secondTargetLayer = layer;
+                break;
+            }
+        }
+
+        if (secondTarget) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+
+static void compositorMerge(Compositor* comp, uint16_t linebuffer[], uint16_t BCNT, uint16_t BALPHA, uint8_t BY) {
+    /* Merges all layers in compositor and stores it in linebuffer,
+     * Applies blending and brightness effects as implied in BLDCNT 
+     * Backdrop is expected to be present in compositor */
+
+    uint8_t sfxType = BCNT >> 6 & 0b11;
+    /*
+    printf("Compositor: BLDCNT: %04x\n", BCNT);
+    for (int i=comp->layerCount-1; i>=0; i--) {
+        Layer l = compositorGetLayer(comp, i);
+        
+        switch (l.type) {
+            case LAYER_BG0: printf("BG 0\n"); break;
+            case LAYER_BG1: printf("BG 1\n"); break;
+            case LAYER_BG2: printf("BG 2\n"); break;
+            case LAYER_BG3: printf("BG 3\n"); break;
+            case LAYER_SPRITE: printf("SPRITE\n"); break;
+            case LAYER_BACKDROP: printf("BACKDROP\n"); break;
+        }
+    }
+    printf("\n");
+    */
+
+    for (int i=0; i<240; i++) {
+        uint8_t topLayerIndex = -1;
+        Layer topLayer;
+        uint16_t topPixel;
+
+        /* Find topmost non transparent pixel for certain x */
+        for (uint8_t index = comp->layerCount-1; index>=0; index--) {
+            Layer layer = compositorGetLayer(comp, index);
+            uint16_t pixel = layer.linebuffer[i];
+
+            /* Pixel not transparent, break */
+            if (!(pixel >> 15 & 1)) {
+                topLayerIndex = index;
+                topPixel = pixel;
+                topLayer = layer;
+                break;
+            }
+        }
+
+        /* Check and apply special effects */
+        if (topLayerIndex > 0 && sfxType == 1) {
+            /* Alpha Blending */
+            Layer firstTargetLayer, secondTargetLayer;
+            bool doAlphaBlending = checkDoAlphaBlend(comp, topLayerIndex, i, BCNT, &firstTargetLayer, &secondTargetLayer);
+
+            if (doAlphaBlending) {
+                /* Blend confirmed, blend first target and second target
+                 * and store in topPixel */
+
+                uint8_t EVA = BALPHA & 0x1F;
+                uint8_t EVB = BALPHA >> 8 & 0x1F;
+
+                if (EVA > 16) EVA = 16;
+                if (EVB > 16) EVB = 16;
+
+                uint16_t BGR1 = firstTargetLayer.linebuffer[i];
+                uint16_t BGR2 = secondTargetLayer.linebuffer[i];
+                uint16_t BGR3 = alphaBlend(BGR1, BGR2, EVA, EVB);
+
+                topPixel = BGR3;
+            }
+        } else if (sfxType == 2) {
+            /* Brightness Increase */
+            bool doBrightness = checkDoBrightness(topLayer, BCNT);
+            if (doBrightness) {
+                uint8_t EVY = BY & 0x1F;
+
+                if (EVY > 16) EVY = 16;
+
+                uint16_t BGR1 = topLayer.linebuffer[i];
+                uint16_t BGR2 = brightnessIncrease(BGR1, EVY);
+
+                topPixel = BGR2;
+            }
+        } else if (sfxType == 3) {
+            /* Brightness Decrease */
+            bool doBrightness = checkDoBrightness(topLayer, BCNT);
+            if (doBrightness) {
+                uint8_t EVY = BY & 0x1F;
+
+                if (EVY > 16) EVY = 16;
+
+                uint16_t BGR1 = topLayer.linebuffer[i];
+                uint16_t BGR2 = brightnessDecrease(BGR1, EVY);
+
+                topPixel = BGR2;
+            }
+
+        }
+
+        /* Finally write pixel to buffer */
+        linebuffer[i] = topPixel;
+    }
+}
+
 /* ---------------------------------------------------------------------- */
 
 static void getSpriteDimensions(uint8_t size, uint8_t shape, uint8_t* _width, uint8_t* _height) {
@@ -276,7 +519,7 @@ static void computeSpriteRotScalScanline(GBA* gba, uint16_t linebuffer[], uint8_
     /* Render whole sprite to a buffer first, then sort out visible parts before
      * copying to final linebuffer */
     uint16_t spritebuffer[width*8];
-    repeatLoadFramebuffer(gba, (uint16_t)(1<<15), spritebuffer, width*8);
+    repeatLoadFramebuffer((uint16_t)(1<<15), spritebuffer, width*8);
 
     for (uint16_t xReal=0; xReal<width*8; xReal++) {
         /* x and y represent internal sprite coordinates with origin at top left */
@@ -367,7 +610,7 @@ static bool computeSpriteScanline(GBA* gba, uint16_t linebuffer[], uint8_t minPr
         //printf("BG Priority: %d\n", p);
         uint16_t currentlinebuffer[240];
         /* Set all palettes to transparent by default */
-        repeatLoadFramebuffer(gba, 1<<15, currentlinebuffer, 240);
+        repeatLoadFramebuffer(1<<15, currentlinebuffer, 240);
         
         for (int i=127; i>=0; i--) {
             //printf("OAM index: %d\n", i);
@@ -811,8 +1054,9 @@ static bool getHighestPriorityBG(GBA* gba, uint8_t* N, bool exclude[], uint8_t* 
     return true;
 }
 
-/* Stacking is done for BG Modes 0-2, for bitmap modes stacking is not needed as only BG2 is used
- * OBJ and BG layers are interleaved based on priority */
+/* Stacking is done for BG Modes 0-2 in this function
+ * OBJ and BG layers are interleaved based on priority and pushed to compositor
+ * Then compositor merges and applies SFX */
 
 static void stackLayers(GBA* gba, bool exclude[], uint8_t mode[], uint16_t linebuffer[]) {
     uint8_t N = 0;  /* 0-3 */
@@ -822,23 +1066,20 @@ static void stackLayers(GBA* gba, bool exclude[], uint8_t mode[], uint16_t lineb
     int8_t spritePriorityRendered = -1;     /* Not rendered yet */
 
     /* For mode 0-2 */
-    /* Fill linebuffer with transparent */
-    repeatLoadFramebuffer(gba, (uint16_t)(1 << 15), linebuffer, 240);
+    Compositor comp = compositorNew();
 
     bool found = getHighestPriorityBG(gba, &N, exclude, &priority);
     if (found) { 
-        bool transparentPixelExists = false;  
         do {
-            transparentPixelExists = false;
+            Layer bgLayer = compositorNewLayer(N);
 
-            uint16_t currentlinebuffer[240];
             if (mode[N] == 1) {
                 /* Text mode */
-                computeBGTextScanline(gba, N, currentlinebuffer);
+                computeBGTextScanline(gba, N, bgLayer.linebuffer);
             } else {
                 /* Rotation/Scaling mode */
-                computeBGRotScalScanline_M1_M2(gba, N, currentlinebuffer);
-            }
+                computeBGRotScalScanline_M1_M2(gba, N, bgLayer.linebuffer);
+            } 
 
             /* Exclude BG we just computed */
             exclude[N] = true;
@@ -858,65 +1099,103 @@ static void stackLayers(GBA* gba, bool exclude[], uint8_t mode[], uint16_t lineb
                 uint8_t min = oldPriority;
 
                 /* Overwrite currentlinebuffer */
-                computeSpriteScanline(gba, currentlinebuffer, min, max, TILE_DATA_BASE_TEXT);
+                Layer spriteLayer = compositorNewLayer(LAYER_SPRITE);
+                bool found = computeSpriteScanline(gba, spriteLayer.linebuffer, min, max, TILE_DATA_BASE_TEXT);
+
+                if (found) {
+                    /* BG hasnt been pushed yet */
+                    compositorPushBackLayer(&comp, spriteLayer);
+                }
 
                 spritePriorityRendered = oldPriority;
             }
 
-            /* Fill transparent pixels left over from previous compositions */
-            for (int x=0; x<240; x++) {
-                /* If bit 15 is set, pixel is transparent */
-                if ((linebuffer[x] >> 15) & 1) {
-                    linebuffer[x] = currentlinebuffer[x];
-                    if ((linebuffer[x] >> 15) & 1) transparentPixelExists = true;
-                }
-            }
+            compositorPushBackLayer(&comp, bgLayer);
+        } while (found);
 
-        } while (transparentPixelExists && found);
-        /* Transparent pixel exists, resolve by layering till there are no transparent pixels
-         * or we have exhausted available layers */
-
-        if (spritesEnabled && transparentPixelExists && spritePriorityRendered < 3) {
+        if (spritesEnabled && spritePriorityRendered < 3) {
             /* BG layers have been exhausted, loop will quit at the end of this 
              * iteration. Resolve any underlying sprite layers only if they are available */
-            uint16_t currentlinebuffer[240];
-            computeSpriteScanline(gba, currentlinebuffer, 3, spritePriorityRendered+1, TILE_DATA_BASE_TEXT);
+            Layer spriteLayer = compositorNewLayer(LAYER_SPRITE);
 
-            /* Fill transparent pixels left over from stacked sprite layers if possible */
-            for (int x=0; x<240; x++) {
-                /* If bit 15 is set, pixel is transparent */
-                if ((linebuffer[x] >> 15) & 1) {
-                    linebuffer[x] = currentlinebuffer[x];
-                }
+            bool found = computeSpriteScanline(gba, spriteLayer.linebuffer, 3, spritePriorityRendered+1, TILE_DATA_BASE_TEXT);
+
+            if (found) {
+                compositorPushBackLayer(&comp, spriteLayer);
             }
-
         } 
     } else {
         /* No BG layer enabled, stack all sprites */
-        if (spritesEnabled) computeSpriteScanline(gba, linebuffer, 3, 0, TILE_DATA_BASE_TEXT);
+        if (spritesEnabled) {
+            Layer spriteLayer = compositorNewLayer(LAYER_SPRITE);
+            bool found = computeSpriteScanline(gba, spriteLayer.linebuffer, 3, 0, TILE_DATA_BASE_TEXT);
+            if (found) {
+                compositorPushBackLayer(&comp, spriteLayer);
+            }
+        }
     }
 
-    /* At this point, either all pixels have been resolved and no transparency remains, 
-     * or we exhausted background layers. We also ensured we exhaust any remaining underlying 
-     * sprite layers before exiting */
+    /* At this point, either all background and sprite layers have been resolved
+     * Add a final backdrop layer at the very bottom */
+    compositorPushBackBackdrop(&comp, readBGPaletteRAM(gba, 0));
+
+    /* Compositor is ready to be merged, with alpha blending and brightness effects */
+    uint16_t BCNT = readIO_internal(gba, BLDCNT, WIDTH_16);
+    uint16_t BALPHA = readIO_internal(gba, BLDALPHA, WIDTH_16);
+    uint8_t BY = readIO_internal(gba, BLDY, WIDTH_8);
+
+    compositorMerge(&comp, linebuffer, BCNT, BALPHA, BY);
+
+    /* Stacked linebuffer is ready */
+}
+
+/* Stacking is done for bitmap modes 3-5 in this function, only BG2 is used along with sprites.
+ * Layers are filled into compositor starting from mode specific properties and then merged
+ * along with SFX */
+
+static void stackLayersBitmap(GBA* gba, uint16_t linebuffer[], uint32_t mapDataBase, uint16_t noTilesPerRow, uint16_t noTilesPerCol, uint16_t (*getBGAffinePalette)(GBA*, uint32_t, uint32_t, int32_t, int32_t, uint16_t)) {
+    bool BGEnabled = gba->latchedDISPCNT >> 10 & 1;
+    bool spriteEnabled = gba->latchedDISPCNT >> 12 & 1;
+    uint8_t spritePriorityMin = 3;
+
+    Compositor comp = compositorNew();
+
+    if (BGEnabled) {
+        Layer bgLayer = compositorNewLayer(LAYER_BG2);
+        computeBGRotScalScanline(gba, 2, bgLayer.linebuffer, mapDataBase, 0, noTilesPerRow, noTilesPerCol, 0, getBGAffinePalette);
+        compositorPushBackLayer(&comp, bgLayer);
+
+        uint16_t BGCNT = readIO_internal(gba, BG2CNT, WIDTH_16);
+        spritePriorityMin = BGCNT & 0b11;
+    }
+
+    if (spriteEnabled) {
+        Layer spriteLayer = compositorNewLayer(LAYER_SPRITE);
+        computeSpriteScanline(gba, spriteLayer.linebuffer, spritePriorityMin, 0, TILE_DATA_BASE_BITMAP);
+        compositorPushTopLayer(&comp, spriteLayer);
+    }
+
+    compositorPushBackBackdrop(&comp, readBGPaletteRAM(gba, 0));
+
+    /* Compositor is ready to be merged, with alpha blending and brightness effects */
+    uint16_t BCNT = readIO_internal(gba, BLDCNT, WIDTH_16);
+    uint16_t BALPHA = readIO_internal(gba, BLDALPHA, WIDTH_16);
+    uint8_t BY = readIO_internal(gba, BLDY, WIDTH_8);
+
+    compositorMerge(&comp, linebuffer, BCNT, BALPHA, BY);
 }
 
 static void renderTransparentScanline(GBA* gba) {
     /* Load a transparent scanline at current y in framebuffer */
     uint16_t* start = &gba->framebuffer[gba->IO[VCOUNT]*WIDTH_PX];
-    repeatLoadFramebuffer(gba, (uint16_t)(1 << 15), start, 240);
+    repeatLoadFramebuffer((uint16_t)(1 << 15), start, 240);
 }
 
 static void renderLinebuffer(GBA* gba, uint16_t linebuffer[]) {
-    /* Proceed to rendering the final composite BG linebuffer.
-     * Transparent pixels are set to first index in first palette.
-     * This step will come after sprite layering when its implemented */
-
-    uint16_t backdrop = readBGPaletteRAM(gba, 0);
+    /* Proceed to rendering the final composite BG linebuffer */
 
     for (int x=0; x<240; x++) {
         uint16_t rgb = linebuffer[x];
-        if ((rgb >> 15)&1) rgb = backdrop;
 
         gba->framebuffer[gba->IO[VCOUNT]*WIDTH_PX+x] = rgb;
     }
@@ -959,6 +1238,7 @@ static void renderBGMode2Scanline(GBA* gba) {
 }
 
 
+
 static void renderBGMode3Scanline(GBA* gba) {
 	/* Mode 3 is a simple bitmap mode with only 1 frame/screen and the pixel data 
 	 * along with colors are stored directly in VRAM from 0x06000000-0x06012BFF 
@@ -970,25 +1250,9 @@ static void renderBGMode3Scanline(GBA* gba) {
      * pixels */
 
     /* BG2 should be enabled */
-    bool BGEnabled = gba->latchedDISPCNT >> 10 & 1;
-    bool spriteEnabled = gba->latchedDISPCNT >> 12 & 1;
-
     uint16_t linebuffer[240];
-    uint8_t spritePriorityMin = 3;
 
-    if (!BGEnabled) {
-        repeatLoadFramebuffer(gba, (uint16_t)(1 << 15), linebuffer, 240);
-    } else {
-        computeBGRotScalScanline(gba, 2, linebuffer, 0, 0, 30, 20, 0, getBGAffinePalette_M3);
-
-        uint16_t BGCNT = readIO_internal(gba, BG2CNT, WIDTH_16);
-        spritePriorityMin = BGCNT & 0b11;
-    }
-
-    if (spriteEnabled) {
-        computeSpriteScanline(gba, linebuffer, spritePriorityMin, 0, TILE_DATA_BASE_BITMAP);
-    }
-
+    stackLayersBitmap(gba, linebuffer, 0x0000, 30, 20, getBGAffinePalette_M3);
     renderLinebuffer(gba, linebuffer); 
 }
 
@@ -1003,27 +1267,12 @@ static void renderBGMode4Scanline(GBA* gba) {
 	 * Note: Transparent color is the color 0 of BG Palette, currently sprites are not supported */
 
     /* BG2 should be enabled */
-    
-    bool BGEnabled = gba->latchedDISPCNT >> 10 & 1;
-    bool spriteEnabled = gba->latchedDISPCNT >> 12 & 1;
+
 
     uint16_t linebuffer[240];
-    uint8_t spritePriorityMin = 3;
 	uint32_t base = (gba->latchedDISPCNT >> 4 & 1) ? 0xA000 : 0x0000;
 
-    if (!BGEnabled) {
-        repeatLoadFramebuffer(gba, (uint16_t)(1 << 15), linebuffer, 240);
-    } else {
-        computeBGRotScalScanline(gba, 2, linebuffer, base, 0, 30, 20, 0, getBGAffinePalette_M4);
-
-        uint16_t BGCNT = readIO_internal(gba, BG2CNT, WIDTH_16);
-        spritePriorityMin = BGCNT & 0b11;
-    }
-
-    if (spriteEnabled) {
-        computeSpriteScanline(gba, linebuffer, spritePriorityMin, 0, TILE_DATA_BASE_BITMAP);
-    }
-
+    stackLayersBitmap(gba, linebuffer, base, 30, 20, getBGAffinePalette_M4);
     renderLinebuffer(gba, linebuffer);
 }
 
@@ -1034,26 +1283,10 @@ static void renderBGMode5Scanline(GBA* gba) {
 
     /* BG2 should be enabled */
 
-    bool BGEnabled = gba->latchedDISPCNT >> 10 & 1;
-    bool spriteEnabled = gba->latchedDISPCNT >> 12 & 1;
-
     uint16_t linebuffer[240];
 	uint32_t base = (gba->latchedDISPCNT >> 4 & 1) ? 0xA000 : 0x0000;
-    uint8_t spritePriorityMin = 3;
 
-    if (!BGEnabled) {
-        repeatLoadFramebuffer(gba, (uint16_t)(1 << 15), linebuffer, 240);
-    } else {
-        computeBGRotScalScanline(gba, 2, linebuffer, base, 0, 20, 16, 0, getBGAffinePalette_M5);
-
-        uint16_t BGCNT = readIO_internal(gba, BG2CNT, WIDTH_16);
-        spritePriorityMin = BGCNT & 0b11;
-    }
-
-    if (spriteEnabled) {
-        computeSpriteScanline(gba, linebuffer, spritePriorityMin, 0, TILE_DATA_BASE_BITMAP);
-    }
-
+    stackLayersBitmap(gba, linebuffer, base, 20, 16, getBGAffinePalette_M5);
     renderLinebuffer(gba, linebuffer);
 }
 

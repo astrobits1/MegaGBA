@@ -10,6 +10,9 @@
 
 #define BYTES_PER_Y WIDTH_PX*sizeof(uint16_t)
 
+/* Keep multiple of 2 only for easy modulo */
+#define COMPOSITOR_STACK_SIZE 16
+
 typedef struct GBA GBA;
 
 typedef enum {
@@ -61,6 +64,27 @@ typedef enum {
     OBJ_VRAM_MAPPING_2DIM,
     OBJ_VRAM_MAPPING_1DIM
 } OBJ_VRAM_MAPPING;
+
+typedef enum {
+    LAYER_BG0,
+    LAYER_BG1,
+    LAYER_BG2,
+    LAYER_BG3,
+    LAYER_SPRITE,
+    LAYER_BACKDROP
+} LAYER_TYPE;
+
+typedef struct {
+    LAYER_TYPE type;
+    uint16_t linebuffer[240];
+} Layer;
+
+typedef struct {
+    Layer layerStack[COMPOSITOR_STACK_SIZE];
+    uint8_t layerCount;
+    uint8_t headPointer;
+    uint8_t basePointer;
+} Compositor;
 
 void initialisePPU(GBA* gba);
 /* Step the PPU State */
