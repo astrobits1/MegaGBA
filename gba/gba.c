@@ -566,13 +566,9 @@ static void writeIO_byte(GBA* gba, uint32_t ioaddr, uint8_t data) {
          * will be 'acknowledged' and cleared in IF if they were set */
         gba->IO[ioaddr] &= ~data;
         return;
-    } else if (ioaddr >= DMA0CNT_L && ioaddr <= DMA0CNT_H) {
-        //printf("DMA0CNT written\n");
-        //
-    } else if (ioaddr >= DMA3CNT_L && ioaddr <= DMA3CNT_H) {
-        //printf("DMA3CNT written\n");
-    } else if (ioaddr >= 0x40 && ioaddr <= 0x47) {
-        //printf("window written\n");
+    } else if (ioaddr >= KEYINPUT && ioaddr <= KEYINPUT+1) {
+        /* Read only */
+        return;
     }
 
 
