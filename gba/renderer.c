@@ -3,9 +3,11 @@
 #include <SDL2/SDL.h>
 #include <unistd.h>
 
-
 #define TILE_DATA_BASE_TEXT     0x10000
 #define TILE_DATA_BASE_BITMAP   0x14000
+
+static void stackLayers(GBA* gba, uint8_t enabled, uint8_t exclude, bool spritesEnabled, bool sfxEnabled, uint8_t mode, uint16_t linebuffer[]);
+static void stackLayersBitmap(GBA* gba, bool bgEnabled, bool spritesEnabled, bool sfxEnabled, uint16_t linebuffer[], uint32_t mapDataBase, uint16_t noTilesPerRow, uint16_t noTilesPerCol, uint16_t (*getBGAffinePalette)(GBA*, uint32_t, uint32_t, int32_t, int32_t, uint16_t));
 
 static inline void latchDISPCNT(GBA* gba) {
 	uint16_t DISPCNT = readIO_internal(gba, DISPCNT, WIDTH_16);
@@ -204,12 +206,13 @@ static bool checkDoAlphaBlend(Compositor* comp, uint8_t topLayerIndex, uint8_t x
 }
 
 
-static void compositorMerge(Compositor* comp, uint16_t linebuffer[], uint16_t BCNT, uint16_t BALPHA, uint8_t BY) {
+static void compositorMerge(Compositor* comp, uint16_t linebuffer[], bool sfxEnabled, uint16_t BCNT, uint16_t BALPHA, uint8_t BY) {
     /* Merges all layers in compositor and stores it in linebuffer,
      * Applies blending and brightness effects as implied in BLDCNT 
      * Backdrop is expected to be present in compositor */
 
     uint8_t sfxType = BCNT >> 6 & 0b11;
+
     /*
     printf("Compositor: BLDCNT: %04x\n", BCNT);
     for (int i=comp->layerCount-1; i>=0; i--) {
@@ -221,6 +224,7 @@ static void compositorMerge(Compositor* comp, uint16_t linebuffer[], uint16_t BC
             case LAYER_BG2: printf("BG 2\n"); break;
             case LAYER_BG3: printf("BG 3\n"); break;
             case LAYER_SPRITE: printf("SPRITE\n"); break;
+            case LAYER_SEMI_TRANSPARENT_SPRITE: printf("SEMI TRANSPARENT SPRITE\n"); break;
             case LAYER_BACKDROP: printf("BACKDROP\n"); break;
         }
     }
@@ -248,38 +252,40 @@ static void compositorMerge(Compositor* comp, uint16_t linebuffer[], uint16_t BC
 
 
         /* Check and apply special effects */
-        if (sfxType == 2) {
-            /* Brightness Increase */
-            bool doBrightness = checkDoBrightness(topLayer, BCNT);
-            if (doBrightness) {
-                uint8_t EVY = BY & 0x1F;
+        if (sfxEnabled) {
+            if (sfxType == 2) {
+                /* Brightness Increase */
+                bool doBrightness = checkDoBrightness(topLayer, BCNT);
+                if (doBrightness) {
+                    uint8_t EVY = BY & 0x1F;
 
-                if (EVY > 16) EVY = 16;
+                    if (EVY > 16) EVY = 16;
 
-                uint16_t BGR1 = topPixel;
-                uint16_t BGR2 = brightnessIncrease(BGR1, EVY);
+                    uint16_t BGR1 = topPixel;
+                    uint16_t BGR2 = brightnessIncrease(BGR1, EVY);
 
-                topPixel = BGR2;
+                    topPixel = BGR2;
+                }
+            } else if (sfxType == 3) {
+                /* Brightness Decrease */
+                bool doBrightness = checkDoBrightness(topLayer, BCNT);
+                if (doBrightness) {
+                    uint8_t EVY = BY & 0x1F;
+
+                    if (EVY > 16) EVY = 16;
+
+                    uint16_t BGR1 = topPixel;
+                    uint16_t BGR2 = brightnessDecrease(BGR1, EVY);
+
+                    topPixel = BGR2;
+                }
             }
-        } else if (sfxType == 3) {
-            /* Brightness Decrease */
-            bool doBrightness = checkDoBrightness(topLayer, BCNT);
-            if (doBrightness) {
-                uint8_t EVY = BY & 0x1F;
-
-                if (EVY > 16) EVY = 16;
-
-                uint16_t BGR1 = topPixel;
-                uint16_t BGR2 = brightnessDecrease(BGR1, EVY);
-
-                topPixel = BGR2;
-            }
-
         }
 
         /* Alpha blending is applied over brightness for semi transparent sprites, 
-         * and only the original pixel is used for first target */
-        if (topLayerIndex > 0 && (sfxType == 1 || topLayer.type == LAYER_SEMI_TRANSPARENT_SPRITE)) {
+         * and only the original pixel is used for first target. 
+         * Semi Transparent sprites bypass window SFX enable*/
+        if (topLayerIndex > 0 && ((sfxEnabled && sfxType == 1) || topLayer.type == LAYER_SEMI_TRANSPARENT_SPRITE)) {
             /* Alpha Blending */
             Layer firstTargetLayer, secondTargetLayer;
             bool doAlphaBlending = checkDoAlphaBlend(comp, topLayerIndex, i, BCNT, &firstTargetLayer, &secondTargetLayer);
@@ -306,7 +312,59 @@ static void compositorMerge(Compositor* comp, uint16_t linebuffer[], uint16_t BC
     }
 }
 
-/* ---------------------------------------------------------------------- */
+/* ---------------------- Window ---------------------------- */
+static bool checkWindowInY(GBA* gba, uint16_t WV) {
+    uint8_t Y1 = WV >> 8 & 0xFF;
+    uint8_t Y2 = WV & 0xFF;
+
+    if (Y2 > 160) Y2 = 160;
+    if (Y1 > Y2) Y2 = 160;
+
+    /* Window is confined between [Y1, Y2] */
+    if (gba->IO[VCOUNT] >= Y1 && gba->IO[VCOUNT] <= Y2-1) {
+        return true;
+    }
+
+    return false;
+}
+
+static void computeAndOverlayWindow(GBA* gba, uint8_t layersEnabled, uint16_t WH, uint16_t linebuffer[], uint8_t exclude, uint8_t mode) {
+    uint8_t X1 = WH >> 8 & 0xFF;
+    uint8_t X2 = WH & 0xFF;
+    if (X2 > 240 || X1 > X2) X2 = 240;
+    X2--;
+
+    uint8_t bgEnabled = layersEnabled & 0xF;
+    uint8_t spritesEnabled = layersEnabled >> 4 & 1;
+    uint8_t sfxEnabled = layersEnabled >> 5 & 1;
+
+    uint16_t windowlinebuffer[240];
+    stackLayers(gba, bgEnabled, exclude, spritesEnabled, sfxEnabled, mode, windowlinebuffer);
+
+    for (int x=X1; x<=X2; x++) {
+        linebuffer[x] = windowlinebuffer[x];
+    }
+}
+
+static void computeAndOverlayWindowBitmap(GBA* gba, uint8_t layersEnabled, uint16_t WH, uint16_t linebuffer[], uint32_t mapDataBase, uint16_t noTilesPerRow, uint16_t noTilesPerCol, uint16_t (*getBGAffinePalette)(GBA*, uint32_t, uint32_t, int32_t, int32_t, uint16_t)) {
+    uint8_t X1 = WH >> 8 & 0xFF;
+    uint8_t X2 = WH & 0xFF;
+    if (X2 > 240 || X1 > X2) X2 = 240;
+    X2--;
+
+    uint8_t bgEnabled = layersEnabled & 0xF;
+    uint8_t spritesEnabled = layersEnabled >> 4 & 1;
+    uint8_t sfxEnabled = layersEnabled >> 5 & 1;
+
+    uint16_t windowlinebuffer[240];
+    stackLayersBitmap(gba, bgEnabled, spritesEnabled, sfxEnabled, linebuffer, mapDataBase, noTilesPerRow, noTilesPerCol, getBGAffinePalette);
+
+    for (int x=X1; x<=X2; x++) {
+        linebuffer[x] = windowlinebuffer[x];
+    }
+}
+
+/* ---------------------------- Sprites --------------------------------- */
 
 static void getSpriteDimensions(uint8_t size, uint8_t shape, uint8_t* _width, uint8_t* _height) {
     /* Converts size and shape to height and width in tiles */
@@ -772,7 +830,19 @@ static uint16_t getBGAffinePalette_M5(GBA* gba, uint32_t mapDataBase, uint32_t _
 
 static bool computeBGRotScalScanline(GBA* gba, uint8_t N, uint16_t linebuffer[], uint32_t mapDataBase, uint32_t tileDataBase, uint16_t noTilesPerRow, uint16_t noTilesPerCol, uint8_t displayOverflow, uint16_t (*getBGAffinePalette)(GBA*, uint32_t, uint32_t, int32_t, int32_t, uint16_t)){
     /* Extract BG registers from layer no. (N) */
- 
+
+    /* Retrieve and return from cache if its available */
+    if (gba->bgLayerLinebufferCacheUsed[N]) {
+        bool transparentPixelExists = false;
+        for (int i=0; i<240; i++) {
+            uint16_t v = gba->bgLayerLinebufferCache[N][i];
+            if (v >> 15 & 1) transparentPixelExists = true;
+            linebuffer[i] = v;
+        }
+
+        return transparentPixelExists;
+    }
+
     int32_t BGX = N&1 ? gba->internalBG3X : gba->internalBG2X;
     int32_t BGY = N&1 ? gba->internalBG3Y : gba->internalBG2Y;
 
@@ -821,11 +891,14 @@ static bool computeBGRotScalScanline(GBA* gba, uint8_t N, uint16_t linebuffer[],
             /* Transparent from palette */
             if (rgb >> 15 & 1) transparentPixelExists = true;
             linebuffer[xReal] = rgb;
+            gba->bgLayerLinebufferCache[N][xReal] = rgb;
         } else {
             /* Transparent pixel */
             linebuffer[xReal] = 0xFFFF;
+            gba->bgLayerLinebufferCache[N][xReal] = 0xFFFF;
             transparentPixelExists = true;
         }
+
    
         // dx
         x = (x_i << 8) | (x&0xFF);
@@ -856,6 +929,7 @@ static bool computeBGRotScalScanline(GBA* gba, uint8_t N, uint16_t linebuffer[],
         gba->internalBG2Y = y;
     }
 
+    gba->bgLayerLinebufferCacheUsed[N] = true;
     return transparentPixelExists;
 }
 
@@ -881,7 +955,20 @@ static bool computeBGTextScanline(GBA* gba, uint8_t N, uint16_t linebuffer[]) {
     /* This function computes the entire BG Text Mode scanline (VCOUNT) palette data given layer no.
      * (N) and loads rgb555 16 bit data per pixel (including transparency 
      * as bit 16) into the array specified by linebuffer. 
-     * It also returns whether there exists a transparent pixel in the scanline */
+     * It also returns whether there exists a transparent pixel in the scanline 
+     *
+     * If layer has been precomputed and stored in cache, then it retrives and returns it */
+
+    if (gba->bgLayerLinebufferCacheUsed[N]) {
+        bool transparentPixelExists = false;
+        for (int i=0; i<240; i++) {
+            uint16_t v = gba->bgLayerLinebufferCache[N][i];
+            if (v >> 15 & 1) transparentPixelExists = true;
+            linebuffer[i] = v;
+        }
+
+        return transparentPixelExists;
+    }
 
     /* Extract BG registers from layer no. (N) */
     uint16_t BGCNT = readIO_internal(gba, BG0CNT+2*N, WIDTH_16);
@@ -1036,6 +1123,7 @@ static bool computeBGTextScanline(GBA* gba, uint8_t N, uint16_t linebuffer[]) {
             }
 
             linebuffer[xReal] = rgb;
+            gba->bgLayerLinebufferCache[N][xReal] = rgb;
 
             /* No need to render the last tile fully if horizontal scrolling % 8 != 0,
                 * mark stop when the buffer is full */
@@ -1069,22 +1157,23 @@ static bool computeBGTextScanline(GBA* gba, uint8_t N, uint16_t linebuffer[]) {
         }
     }
 
-    //printf("\n");
+    /* Data has been loaded in cache and can be used anytime in this scanline */
+    gba->bgLayerLinebufferCacheUsed[N] = true;
     return transparentPixelExists;
 }
 
-static bool getHighestPriorityBG(GBA* gba, uint8_t* N, bool exclude[], uint8_t* priority) {
+static bool getHighestPriorityBG(GBA* gba, uint8_t* N, uint8_t enabled, uint8_t exclude, uint8_t* priority) {
     /* Return highest priority BG layer that is enabled and not excluded
      * Priority goes from 0-3, 3 being the lowest */
     uint8_t lowestPrio = 4;
 
-    for (int i=8; i<12; i++) {
-        if (gba->latchedDISPCNT >> i & 1) {
-            uint16_t CNT = readIO_internal(gba, BG0CNT+2*(i-8), WIDTH_16);
+    for (int i=0; i<4; i++) {
+        if (enabled >> i & 1) {
+            uint16_t CNT = readIO_internal(gba, BG0CNT+2*i, WIDTH_16);
             uint8_t prio = CNT & 0b11;
-            if (prio < lowestPrio && !exclude[i-8]) {
+            if (prio < lowestPrio && !(exclude >> i & 1)) {
                 lowestPrio = prio;
-                *N = i-8;
+                *N = i;
             }
 
             /* If priority comes out to be equal to the previous lowest,
@@ -1100,26 +1189,52 @@ static bool getHighestPriorityBG(GBA* gba, uint8_t* N, bool exclude[], uint8_t* 
     return true;
 }
 
+static void computeAndPushBackSpriteLayers(GBA* gba, Compositor* comp, uint8_t pMin, uint8_t pMax, uint32_t tileDataBase) {
+    /* Compute sprite layers and push them if a non zero number of them were found */
+    Layer spriteLayer = compositorNewLayer(LAYER_SPRITE);
+    Layer semiSpriteLayer = compositorNewLayer(LAYER_SEMI_TRANSPARENT_SPRITE);
+    bool foundSemiTransparent = false;
+
+    bool found = computeSpriteScanline(gba, spriteLayer.linebuffer, semiSpriteLayer.linebuffer, &foundSemiTransparent, pMin, pMax, tileDataBase);
+
+    if (found) {
+        /* BG hasnt been pushed yet */
+        if (foundSemiTransparent) {
+            compositorPushBackLayer(comp, semiSpriteLayer);
+        }
+        compositorPushBackLayer(comp, spriteLayer);
+    }
+
+}
+
 /* Stacking is done for BG Modes 0-2 in this function
  * OBJ and BG layers are interleaved based on priority and pushed to compositor
  * Then compositor merges and applies SFX */
 
-static void stackLayers(GBA* gba, bool exclude[], uint8_t mode[], uint16_t linebuffer[]) {
+static void stackLayers(GBA* gba, uint8_t enabled, uint8_t exclude, bool spritesEnabled, bool sfxEnabled, uint8_t mode, uint16_t linebuffer[]) {
+    /* DISPCNT BG0-3 and OBJ enable is still treated as master enable and layer will only be
+     * enabled in effect if both enable flags are true */
+
+    uint8_t masterBGEnabled = gba->latchedDISPCNT >> 8 & 0xF;
+    bool masterSpritesEnabled = gba->latchedDISPCNT >> 12 & 1;
+
+    enabled &= masterBGEnabled;
+    if (!masterSpritesEnabled) spritesEnabled = false;
+
     uint8_t N = 0;  /* 0-3 */
     uint8_t priority = 3;   /* 0-3 */
-    bool spritesEnabled = (bool)(gba->latchedDISPCNT >> 12 & 1);
     //spritesEnabled = false;
     int8_t spritePriorityRendered = -1;     /* Not rendered yet */
 
     /* For mode 0-2 */
     Compositor comp = compositorNew();
 
-    bool found = getHighestPriorityBG(gba, &N, exclude, &priority);
+    bool found = getHighestPriorityBG(gba, &N, enabled, exclude, &priority);
     if (found) { 
         do {
             Layer bgLayer = compositorNewLayer(N);
 
-            if (mode[N] == 1) {
+            if ((mode >> N & 1) == 1) {
                 /* Text mode */
                 computeBGTextScanline(gba, N, bgLayer.linebuffer);
             } else {
@@ -1128,10 +1243,10 @@ static void stackLayers(GBA* gba, bool exclude[], uint8_t mode[], uint16_t lineb
             } 
 
             /* Exclude BG we just computed */
-            exclude[N] = true;
+            exclude |= 1 << N;
             uint8_t oldPriority = priority;
             /* Find next BG */
-            found = getHighestPriorityBG(gba, &N, exclude, &priority);
+            found = getHighestPriorityBG(gba, &N, enabled, exclude, &priority);
 
             /* BG Layers cannot be resolved anymore */
             if (spritesEnabled && (oldPriority != priority || !found)) {
@@ -1145,20 +1260,7 @@ static void stackLayers(GBA* gba, bool exclude[], uint8_t mode[], uint16_t lineb
                 uint8_t min = oldPriority;
 
                 /* Overwrite currentlinebuffer */
-                Layer spriteLayer = compositorNewLayer(LAYER_SPRITE);
-                Layer semiSpriteLayer = compositorNewLayer(LAYER_SEMI_TRANSPARENT_SPRITE);
-                bool foundSemiTransparent = false;
-
-                bool found = computeSpriteScanline(gba, spriteLayer.linebuffer, semiSpriteLayer.linebuffer, &foundSemiTransparent, min, max, TILE_DATA_BASE_TEXT);
-
-                if (found) {
-                    /* BG hasnt been pushed yet */
-                    if (foundSemiTransparent) {
-                        compositorPushBackLayer(&comp, semiSpriteLayer);
-                    }
-                    compositorPushBackLayer(&comp, spriteLayer);
-                }
-
+                computeAndPushBackSpriteLayers(gba, &comp, min, max, TILE_DATA_BASE_TEXT);
                 spritePriorityRendered = oldPriority;
             }
 
@@ -1167,35 +1269,13 @@ static void stackLayers(GBA* gba, bool exclude[], uint8_t mode[], uint16_t lineb
 
         if (spritesEnabled && spritePriorityRendered < 3) {
             /* BG layers have been exhausted, loop will quit at the end of this 
-             * iteration. Resolve any underlying sprite layers only if they are available */
-            Layer spriteLayer = compositorNewLayer(LAYER_SPRITE);
-            Layer semiSpriteLayer = compositorNewLayer(LAYER_SEMI_TRANSPARENT_SPRITE);
-            bool foundSemiTransparent = false;
-
-            bool found = computeSpriteScanline(gba, spriteLayer.linebuffer, semiSpriteLayer.linebuffer, &foundSemiTransparent, 3, spritePriorityRendered+1, TILE_DATA_BASE_TEXT);
-
-            if (found) {
-                if (foundSemiTransparent) {
-                    compositorPushBackLayer(&comp, semiSpriteLayer);
-                }
-                compositorPushBackLayer(&comp, spriteLayer);
-            }
+             * iteration. Resolve any underlying sprite layers only if they are available */ 
+            computeAndPushBackSpriteLayers(gba, &comp, 3, spritePriorityRendered+1, TILE_DATA_BASE_TEXT);
         } 
     } else {
         /* No BG layer enabled, stack all sprites */
         if (spritesEnabled) {
-            Layer spriteLayer = compositorNewLayer(LAYER_SPRITE);
-            Layer semiSpriteLayer = compositorNewLayer(LAYER_SEMI_TRANSPARENT_SPRITE);
-            bool foundSemiTransparent = false;
-
-            bool found = computeSpriteScanline(gba, spriteLayer.linebuffer, semiSpriteLayer.linebuffer, &foundSemiTransparent, 3, 0, TILE_DATA_BASE_TEXT);
-
-            if (found) {
-                if (foundSemiTransparent) {
-                    compositorPushBackLayer(&comp, semiSpriteLayer);
-                }
-                compositorPushBackLayer(&comp, spriteLayer);
-            }
+            computeAndPushBackSpriteLayers(gba, &comp, 3, 0, TILE_DATA_BASE_TEXT);
         }
     }
 
@@ -1208,7 +1288,7 @@ static void stackLayers(GBA* gba, bool exclude[], uint8_t mode[], uint16_t lineb
     uint16_t BALPHA = readIO_internal(gba, BLDALPHA, WIDTH_16);
     uint8_t BY = readIO_internal(gba, BLDY, WIDTH_8);
 
-    compositorMerge(&comp, linebuffer, BCNT, BALPHA, BY);
+    compositorMerge(&comp, linebuffer, sfxEnabled, BCNT, BALPHA, BY);
 
     /* Stacked linebuffer is ready */
 }
@@ -1217,14 +1297,18 @@ static void stackLayers(GBA* gba, bool exclude[], uint8_t mode[], uint16_t lineb
  * Layers are filled into compositor starting from mode specific properties and then merged
  * along with SFX */
 
-static void stackLayersBitmap(GBA* gba, uint16_t linebuffer[], uint32_t mapDataBase, uint16_t noTilesPerRow, uint16_t noTilesPerCol, uint16_t (*getBGAffinePalette)(GBA*, uint32_t, uint32_t, int32_t, int32_t, uint16_t)) {
-    bool BGEnabled = gba->latchedDISPCNT >> 10 & 1;
-    bool spriteEnabled = gba->latchedDISPCNT >> 12 & 1;
-    uint8_t spritePriorityMin = 3;
+static void stackLayersBitmap(GBA* gba, bool bgEnabled, bool spritesEnabled, bool sfxEnabled, uint16_t linebuffer[], uint32_t mapDataBase, uint16_t noTilesPerRow, uint16_t noTilesPerCol, uint16_t (*getBGAffinePalette)(GBA*, uint32_t, uint32_t, int32_t, int32_t, uint16_t)) {
+    bool masterBGEnabled = gba->latchedDISPCNT >> 10 & 1;
+    bool masterSpritesEnabled = gba->latchedDISPCNT >> 12 & 1;
 
+    if (!masterBGEnabled) bgEnabled = false;
+    if (!masterSpritesEnabled) spritesEnabled = false;
+
+    uint8_t spritePriorityMin = 3;
+    
     Compositor comp = compositorNew();
 
-    if (BGEnabled) {
+    if (bgEnabled) {
         Layer bgLayer = compositorNewLayer(LAYER_BG2);
         computeBGRotScalScanline(gba, 2, bgLayer.linebuffer, mapDataBase, 0, noTilesPerRow, noTilesPerCol, 0, getBGAffinePalette);
         compositorPushBackLayer(&comp, bgLayer);
@@ -1233,7 +1317,7 @@ static void stackLayersBitmap(GBA* gba, uint16_t linebuffer[], uint32_t mapDataB
         spritePriorityMin = BGCNT & 0b11;
     }
 
-    if (spriteEnabled) {
+    if (spritesEnabled) {
         Layer spriteLayer = compositorNewLayer(LAYER_SPRITE);
         Layer semiSpriteLayer = compositorNewLayer(LAYER_SEMI_TRANSPARENT_SPRITE);
         bool foundSemiTransparent = false;
@@ -1241,10 +1325,10 @@ static void stackLayersBitmap(GBA* gba, uint16_t linebuffer[], uint32_t mapDataB
         bool found = computeSpriteScanline(gba, spriteLayer.linebuffer, semiSpriteLayer.linebuffer, &foundSemiTransparent, spritePriorityMin, 0, TILE_DATA_BASE_BITMAP);
 
         if (found) {
+            compositorPushTopLayer(&comp, spriteLayer);
             if (foundSemiTransparent) {
                 compositorPushTopLayer(&comp, semiSpriteLayer);
             }
-            compositorPushTopLayer(&comp, spriteLayer);
         }
     }
 
@@ -1255,8 +1339,83 @@ static void stackLayersBitmap(GBA* gba, uint16_t linebuffer[], uint32_t mapDataB
     uint16_t BALPHA = readIO_internal(gba, BLDALPHA, WIDTH_16);
     uint8_t BY = readIO_internal(gba, BLDY, WIDTH_8);
 
-    compositorMerge(&comp, linebuffer, BCNT, BALPHA, BY);
+    compositorMerge(&comp, linebuffer, sfxEnabled, BCNT, BALPHA, BY);
 }
+
+static void stackWindows(GBA* gba, uint16_t linebuffer[], uint8_t exclude, uint8_t mode) {
+    uint16_t WIN = readIO_internal(gba, WININ, WIDTH_16);
+    uint16_t WOUT = readIO_internal(gba, WINOUT, WIDTH_16);
+
+    uint8_t outLayersEnabled = WOUT & 0x3F;
+    uint8_t outBGEnabled = outLayersEnabled & 0xF;
+    uint8_t outSpritesEnabled = outLayersEnabled >> 4 & 1;
+    uint8_t outSFXEnabled = outLayersEnabled >> 5 & 1;
+
+
+    //printf("DISP: %02x\n", readIO_internal(gba, DISPCNT, WIDTH_16) >> 8);
+    //printf("Out Layers: %02x\n", outLayersEnabled);
+    /* Load outside window layer */
+    stackLayers(gba, outBGEnabled, exclude, outSpritesEnabled, outSFXEnabled, mode, linebuffer);
+
+    /* Window 0 has highest priority, followed by Window 1 and outside window */
+    if (gba->latchedDISPCNT >> 14 & 1) {
+        /* Window 1 enabled */
+        uint16_t W1V = readIO_internal(gba, WIN1V, WIDTH_16);
+        if (checkWindowInY(gba, W1V)) {
+            uint8_t layersEnabled = WIN >> 8 & 0x3F;
+            uint16_t W1H = readIO_internal(gba, WIN1H, WIDTH_16);
+
+            computeAndOverlayWindow(gba, layersEnabled, W1H, linebuffer, exclude, mode);
+        }
+    }
+
+    if (gba->latchedDISPCNT >> 13 & 1) {
+        /* Window 0 enabled */
+        uint16_t W0V = readIO_internal(gba, WIN0V, WIDTH_16);
+        if (checkWindowInY(gba, W0V)) {
+            uint8_t layersEnabled = WIN & 0x3F;
+            uint16_t W0H = readIO_internal(gba, WIN0H, WIDTH_16);
+            computeAndOverlayWindow(gba, layersEnabled, W0H, linebuffer, exclude, mode);
+        }
+    }
+}
+
+static void stackWindowsBitmap(GBA* gba, uint16_t linebuffer[], uint32_t mapDataBase, uint16_t noTilesPerRow, uint16_t noTilesPerCol, uint16_t (*getBGAffinePalette)(GBA*, uint32_t, uint32_t, int32_t, int32_t, uint16_t)) {
+    uint16_t WIN = readIO_internal(gba, WININ, WIDTH_16);
+    uint16_t WOUT = readIO_internal(gba, WINOUT, WIDTH_16);
+
+    uint8_t outLayersEnabled = WOUT & 0x3F;
+    uint8_t outBGEnabled = outLayersEnabled & 0xF;
+    uint8_t outSpritesEnabled = outLayersEnabled >> 4 & 1;
+    uint8_t outSFXEnabled = outLayersEnabled >> 5 & 1;
+
+    /* Load outside window layer */
+    stackLayersBitmap(gba, outBGEnabled, outSpritesEnabled, outSFXEnabled, linebuffer, mapDataBase, noTilesPerRow, noTilesPerCol, getBGAffinePalette);
+
+    /* Window 0 has highest priority, followed by Window 1 and outside window */
+    if (gba->latchedDISPCNT >> 14 & 1) {
+        /* Window 1 enabled */
+        uint16_t W1V = readIO_internal(gba, WIN1V, WIDTH_16);
+        if (checkWindowInY(gba, W1V)) {
+            uint8_t layersEnabled = WIN >> 8 & 0x3F;
+            uint16_t W1H = readIO_internal(gba, WIN1H, WIDTH_16);
+
+            computeAndOverlayWindowBitmap(gba, layersEnabled, W1H, linebuffer, mapDataBase, noTilesPerRow, noTilesPerCol, getBGAffinePalette);
+        }
+    }
+
+    if (gba->latchedDISPCNT >> 13 & 1) {
+        /* Window 0 enabled */
+        uint16_t W0V = readIO_internal(gba, WIN0V, WIDTH_16);
+        if (checkWindowInY(gba, W0V)) {
+            uint8_t layersEnabled = WIN & 0x3F;
+            uint16_t W0H = readIO_internal(gba, WIN0H, WIDTH_16);
+
+            computeAndOverlayWindowBitmap(gba, layersEnabled, W0H, linebuffer, mapDataBase, noTilesPerRow, noTilesPerCol, getBGAffinePalette);
+        }
+    }
+}
+
 
 static void renderTransparentScanline(GBA* gba) {
     /* Load a transparent scanline at current y in framebuffer */
@@ -1279,34 +1438,76 @@ static void renderBGMode0Scanline(GBA* gba) {
     /* BG Mode 0 - Text mode only */
 
     /* Use one of BG0-3 based on priority */
-    
-    bool exclude[] = {false, false, false, false}; /* BG0-3 are supported in mode 0 */
-    uint8_t mode[] = {1, 1, 1, 1};              /* 1=Text mode, 0=Rot/Scaling mode */
+  
+    uint8_t exclude = 0b0000;            /* BG0-3 are supported in mode 0 */
+    uint8_t mode = 0b1111;              /* 1=Text mode, 0=Rot/Scaling mode */
     uint16_t linebuffer[240];
+    
 
-    stackLayers(gba, exclude, mode, linebuffer);
+    uint8_t windowEnabled = gba->latchedDISPCNT >> 13 & 0b011;
+    if (windowEnabled > 0) {
+        /* Window is enabled, stack WIN0, WIN1 and outside based on priority onto final buffer */
+        
+        stackWindows(gba, linebuffer, exclude, mode);
+    } else {
+        /* Window not enabled, render 1 layer like normal */
+        uint8_t bgEnabled = gba->latchedDISPCNT >> 8 & 0xF;
+        bool spritesEnabled = gba->latchedDISPCNT >> 12 & 1;
+
+        stackLayers(gba, bgEnabled, exclude, spritesEnabled, true, mode, linebuffer);
+    }
+
     renderLinebuffer(gba, linebuffer);
 }
 
 static void renderBGMode1Scanline(GBA* gba) {
     /* BG Mode 1 - Hybrid - BG0-1 Text Mode and BG2 Rot/Scaling mode, BG3 not supported */
 
-    bool exclude[] = {false, false, false, true};
-    uint8_t mode[] = {1, 1, 0, 0};
+    uint8_t bgEnabled = gba->latchedDISPCNT >> 8 & 0xF;
+    bool spritesEnabled = gba->latchedDISPCNT >> 12 & 1;
+    uint8_t exclude = 0b1000;
+    uint8_t mode = 0b0011;
     uint16_t linebuffer[240];
 
-    stackLayers(gba, exclude, mode, linebuffer);
+    uint8_t windowEnabled = gba->latchedDISPCNT >> 13 & 0b011;
+    if (windowEnabled > 0) {
+        /* Window is enabled, stack WIN0, WIN1 and outside based on priority onto final buffer */
+        //printf("%d %d %d %d\n", exclude[3], exclude[2], exclude[1], exclude[0]);
+        stackWindows(gba, linebuffer, exclude, mode);
+    } else {
+        /* Window not enabled, render 1 layer like normal */
+        uint8_t bgEnabled = gba->latchedDISPCNT >> 8 & 0xF;
+        bool spritesEnabled = gba->latchedDISPCNT >> 12 & 1;
+
+        stackLayers(gba, bgEnabled, exclude, spritesEnabled, true, mode, linebuffer);
+    }
+
     renderLinebuffer(gba, linebuffer);
 }
 
 static void renderBGMode2Scanline(GBA* gba) {
     /* BG Mode 2 - Rot/Scaling only - BG2-3 Rot/Scaling and BG0-1 not supported */
 
-    bool exclude[] = {true, true, false, false};
-    uint8_t mode[] = {0, 0, 0, 0};
+    uint8_t bgEnabled = gba->latchedDISPCNT >> 8 & 0xF;
+    bool spritesEnabled = gba->latchedDISPCNT >> 12 & 1;
+    uint8_t exclude = 0b0011;
+    uint8_t mode = 0b0000;
     uint16_t linebuffer[240];
 
-    stackLayers(gba, exclude, mode, linebuffer);
+    uint8_t windowEnabled = gba->latchedDISPCNT >> 13 & 0b011;
+    if (windowEnabled > 0) {
+        /* Window is enabled, stack WIN0, WIN1 and outside based on priority onto final buffer */
+
+        stackWindows(gba, linebuffer, exclude, mode);
+    } else {
+        /* Window not enabled, render 1 layer like normal */
+        uint8_t bgEnabled = gba->latchedDISPCNT >> 8 & 0xF;
+        bool spritesEnabled = gba->latchedDISPCNT >> 12 & 1;
+
+        //printf("Main: %x\n", bgEnabled);
+        stackLayers(gba, bgEnabled, exclude, spritesEnabled, true, mode, linebuffer);
+    }
+
     renderLinebuffer(gba, linebuffer);
 }
 
@@ -1323,9 +1524,20 @@ static void renderBGMode3Scanline(GBA* gba) {
      * pixels */
 
     /* BG2 should be enabled */
+    
     uint16_t linebuffer[240];
 
-    stackLayersBitmap(gba, linebuffer, 0x0000, 30, 20, getBGAffinePalette_M3);
+    uint8_t windowEnabled = gba->latchedDISPCNT >> 13 & 0b011;
+    if (windowEnabled > 0) {
+        /* Window is enabled, stack WIN0 and WIN1 based on priority onto final buffer */
+        stackWindowsBitmap(gba, linebuffer, 0x0000, 30, 20, getBGAffinePalette_M3);
+    } else {
+        bool bgEnabled = gba->latchedDISPCNT >> 10 & 1;
+        bool spritesEnabled = gba->latchedDISPCNT >> 12 & 1;
+
+        stackLayersBitmap(gba, bgEnabled, spritesEnabled, true, linebuffer, 0x0000, 30, 20, getBGAffinePalette_M3);
+    }
+
     renderLinebuffer(gba, linebuffer); 
 }
 
@@ -1340,12 +1552,21 @@ static void renderBGMode4Scanline(GBA* gba) {
 	 * Note: Transparent color is the color 0 of BG Palette, currently sprites are not supported */
 
     /* BG2 should be enabled */
-
-
+ 
     uint16_t linebuffer[240];
 	uint32_t base = (gba->latchedDISPCNT >> 4 & 1) ? 0xA000 : 0x0000;
 
-    stackLayersBitmap(gba, linebuffer, base, 30, 20, getBGAffinePalette_M4);
+    uint8_t windowEnabled = gba->latchedDISPCNT >> 13 & 0b011;
+    if (windowEnabled > 0) {
+        /* Window is enabled, stack WIN0 and WIN1 based on priority onto final buffer */
+        stackWindowsBitmap(gba, linebuffer, base, 30, 20, getBGAffinePalette_M4);
+    } else {
+        bool bgEnabled = gba->latchedDISPCNT >> 10 & 1;
+        bool spritesEnabled = gba->latchedDISPCNT >> 12 & 1;
+
+        stackLayersBitmap(gba, bgEnabled, spritesEnabled, true, linebuffer, base, 30, 20, getBGAffinePalette_M4);
+    }
+
     renderLinebuffer(gba, linebuffer);
 }
 
@@ -1359,7 +1580,17 @@ static void renderBGMode5Scanline(GBA* gba) {
     uint16_t linebuffer[240];
 	uint32_t base = (gba->latchedDISPCNT >> 4 & 1) ? 0xA000 : 0x0000;
 
-    stackLayersBitmap(gba, linebuffer, base, 20, 16, getBGAffinePalette_M5);
+    uint8_t windowEnabled = gba->latchedDISPCNT >> 13 & 0b011;
+    if (windowEnabled > 0) {
+        /* Window is enabled, stack WIN0 and WIN1 based on priority onto final buffer */
+        stackWindowsBitmap(gba, linebuffer, base, 20, 16, getBGAffinePalette_M5);
+    } else {
+        bool bgEnabled = gba->latchedDISPCNT >> 10 & 1;
+        bool spritesEnabled = gba->latchedDISPCNT >> 12 & 1;
+
+        stackLayersBitmap(gba, bgEnabled, spritesEnabled, true, linebuffer, base, 20, 16, getBGAffinePalette_M5);
+    }
+
     renderLinebuffer(gba, linebuffer);
 }
 
@@ -1380,7 +1611,7 @@ void updateInternalBGNXY(GBA* gba, uint8_t N) {
 
     if (N&1) {
         gba->internalBG3X = (int32_t)uBGX;
-        gba->internalBG3Y = (int32_t)uBGX;
+        gba->internalBG3Y = (int32_t)uBGY;
     } else {
         gba->internalBG2X = (int32_t)uBGX;
         gba->internalBG2Y = (int32_t)uBGY;
@@ -1398,6 +1629,10 @@ void initialisePPU(GBA* gba) {
 
     /* Initialise framebuffer to full white */
     memset(&gba->framebuffer, 0xFF, WIDTH_PX*HEIGHT_PX*sizeof(uint16_t));
+
+    /* Set cache slots to free */
+    memset(&gba->bgLayerLinebufferCacheUsed, 0, sizeof(uint16_t)*4);
+
     latchDISPCNT(gba);
 
     /* Schedule the first PPU sync */
@@ -1467,6 +1702,9 @@ void stepPPU(GBA* gba) {
 						}
 					}
 				}
+
+                /* Clear cache after scanline */
+                memset(&gba->bgLayerLinebufferCacheUsed, 0, sizeof(uint16_t)*4);
 
 				/* Switch to HBLANK - TODO HBLANK flag is set late */
 				gba->IO[DISPSTAT] |= 0b10;

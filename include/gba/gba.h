@@ -91,6 +91,13 @@ typedef enum {
     BG3Y_L      = 0x3C,
     BG3Y_H      = 0x3E,
 
+    WIN0H       = 0x40,
+    WIN1H       = 0x42,
+    WIN0V       = 0x44,
+    WIN1V       = 0x46,
+    WININ       = 0x48,
+    WINOUT      = 0x4A,
+
     BLDCNT      = 0x50,
     BLDALPHA    = 0x52,
     BLDY        = 0x54,
@@ -169,6 +176,8 @@ struct GBA {
 																   for THUMB instructions */
 	/* ----------------- Renderer ---------------- */
     uint16_t framebuffer[WIDTH_PX*HEIGHT_PX];       /* Framebuffer used with sdl textures for rendering */
+    uint16_t bgLayerLinebufferCache[4][240];        /* Linebuffer cache for BG0-3 */
+    bool bgLayerLinebufferCacheUsed[4];             /* Mark cache slots used/free */
     uint16_t latchedDISPCNT;
     int32_t internalBG2X;
     int32_t internalBG2Y;
