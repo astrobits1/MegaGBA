@@ -1,7 +1,6 @@
 #ifndef gba_include_h
 #define gba_include_h
 
-#include <SDL2/SDL.h>
 #include <stdint.h>
 #include <stddef.h> 
 #include <gba/arm7tdmi.h>
@@ -192,9 +191,8 @@ struct GBA {
 	uint8_t ppuHState; 					// Current Horizontal State of PPU
 
 	/* ----------------- Emulator ---------------- */
-	SDL_Window* SDL_Window; 			/* SDL Window struct pointer */
-	SDL_Renderer* SDL_Renderer; 		/* SDL Renderer struct pointer */
-    SDL_Texture* SDL_Texture;           /* SDL Texture for rendering */
+    void (*frameEndCallback)(struct GBA* gba, void* context);
+    void* context;
 	GamePak* gamepak; 					/* Cartridge containing allocated code and important info
 										   about the game */
 	bool run; 							/* Flag used to stop the emulator and check if its running */
@@ -245,10 +243,8 @@ void busWrite(GBA* gba, uint32_t address, uint32_t data, uint8_t size);
 
 /* --------------- */
 
-void SDLEvents(GBA* gba);
-void startGBAEmulator(GamePak* gamepak, uint8_t* biosROM, size_t biosSize);
-
-void initialiseGBA(GBA* gba, GamePak* gamepak, uint8_t* biosROM, size_t biosSize);
+void startGBAEmulator(GBA* gba);
+void initialiseGBA(GBA* gba, GamePak* gamepak, uint8_t* biosROM, size_t biosSize, void (*frameEndCallback)(GBA* gba, void*), void* context);
 void freeGBA(GBA* gba);
 
 /* DMA */

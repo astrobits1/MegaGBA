@@ -6,7 +6,7 @@
 
 #define HEIGHT_PX 160
 #define WIDTH_PX 240
-#define DISPLAY_SCALING 4
+#define DISPLAY_SCALING 5
 
 #define BYTES_PER_Y WIDTH_PX*sizeof(uint16_t)
 

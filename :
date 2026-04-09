@@ -9,49 +9,44 @@ CC = gcc
 CPPC = g++
 CORE_CFLAGS = -O3 -I$(INCLUDE)
 
-CFLAGS = -O3 `sdl2-config --cflags`
+CFLAGS = -O3 `sdl2-config --cflags'
 LFLAGS = -O3 `sdl2-config --libs` -lm
 EXE = megagba
 
 BIN_CORE = arm7tdmi.o debugGBA.o gamepak.o gba.o renderer.o
 BIN_IMGUI = imgui.o imgui_tables.o imgui_draw.o imgui_widgets.o imgui_impl_sdlrenderer2.o imgui_impl_sdl2.o
 
+# test suite
 
-exe: $(EXE)
+ASMFLAGS = -i $(DEBUG)/test_suite/
 
-$(EXE): libmegagba.a main.o
-	$(CPPC) main.o -O3 `sdl2-config --libs` -L. -lmegagba -o $(EXE)
-
-
-main.o : libmegagba.a \
-         main.c
-	$(CC) -c main.c -I$(INCLUDE) -O3 `sdl2-config --cflags`
+$(EXE): $(BIN_GBA) $(BIN_IMGUI) main.o
+	$(CPPC) $(BIN_GBA) $(BIN_IMGUI) main.o $(LFLAGS) -o $(EXE)
 # ----------------------------------------------------------------------
-core: libmegagba.a
-
-libmegagba.a: $(BIN_CORE)
-	ar rcs libmegagba.a $(BIN_CORE)
-
 gamepak.o : $(INCLUDE_GBA)/gamepak.h \
               $(SRC_GB)/gamepak.c
-	$(CC) -c $(SRC_GB)/gamepak.c $(CORE_CFLAGS)
+	$(CC) -c $(SRC_GB)/gamepak.c $(CFLAGS)
 
 gba.o : $(INCLUDE_GBA)/gba.h $(INCLUDE_GBA)/gamepak.h $(INCLUDE_GBA)/debugGBA.h \
         $(INCLUDE_GBA)/arm7tdmi.h \
        	$(SRC_GB)/gba.c
-	$(CC) -c $(SRC_GB)/gba.c $(CORE_CFLAGS)
+	$(CC) -c $(SRC_GB)/gba.c $(CFLAGS)
+
+main.o : $(INCLUDE_GBA)/gba.h \
+         main.c
+	$(CC) -c main.c $(CFLAGS)
 
 arm7tdmi.o : $(INCLUDE_GBA)/arm7tdmi.h $(INCLUDE_GBA)/gba.h \
         $(SRC_GB)/arm7tdmi.c
-	$(CC) -c $(SRC_GB)/arm7tdmi.c $(CORE_CFLAGS)
+	$(CC) -c $(SRC_GB)/arm7tdmi.c $(CFLAGS)
 
 renderer.o : $(INCLUDE_GBA)/renderer.h $(INCLUDE_GBA)/gba.h\
             $(SRC_GB)/renderer.c
-	$(CC) -c $(SRC_GB)/renderer.c $(CORE_CFLAGS)
+	$(CC) -c $(SRC_GB)/renderer.c $(CFLAGS)
 
 debugGBA.o : $(INCLUDE_GBA)/debugGBA.h \
          $(SRC_GB)/debugGBA.c
-	$(CC) -c $(SRC_GB)/debugGBA.c $(CORE_CFLAGS)
+	$(CC) -c $(SRC_GB)/debugGBA.c $(CFLAGS)
 
 # --------------------------------------------------------------------
 imgui.o: imgui/imgui.cpp

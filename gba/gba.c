@@ -3,96 +3,13 @@
 #include <gba/gamepak.h>
 #include <gba/debugGBA.h>
 #include <gba/renderer.h>
-#include <SDL2/SDL.h>
+#include <string.h>
 #include <stdio.h>
 
 static void reloadDMAInternal(GBA* gba, uint8_t N);
 static void stepDMA(GBA* gba, uint8_t N);
 
 static void handleEvents(GBA* gba);
-
-/* ------------------------------------------------------------------- */
-
-bool initialiseSDL(GBA* gba) {
-    SDL_Init(SDL_INIT_EVERYTHING);
-
-    gba->SDL_Window = SDL_CreateWindow("MegaGBA", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WIDTH_PX * DISPLAY_SCALING, HEIGHT_PX * DISPLAY_SCALING, SDL_WINDOW_SHOWN);
-    //SDL_CreateWindowAndRenderer(WIDTH_PX * DISPLAY_SCALING, HEIGHT_PX * DISPLAY_SCALING, SDL_WINDOW_SHOWN,&gba->SDL_Window, &gba->SDL_Renderer);
-
-    if (gba->SDL_Window == NULL) return false;          /* Failed to create screen */
-
-    gba->SDL_Renderer = SDL_CreateRenderer(gba->SDL_Window, -1, SDL_RENDERER_ACCELERATED);
-
-    if (gba->SDL_Renderer == NULL) return false; 
-
-    gba->SDL_Texture = SDL_CreateTexture(gba->SDL_Renderer, SDL_PIXELFORMAT_BGR555, SDL_TEXTUREACCESS_STREAMING, WIDTH_PX, HEIGHT_PX);
-
-    if (gba->SDL_Texture == NULL) return false;
-
-    SDL_RenderSetScale(gba->SDL_Renderer, DISPLAY_SCALING, DISPLAY_SCALING);
-    SDL_RenderClear(gba->SDL_Renderer);
-    return true;
-}
-
-void SDLEvents(GBA* gba) {
-    /* We listen for events like keystrokes and window closing */
-    SDL_Event event;
-
-#define KEYINPUT_SET(b)     writeIO_internal(gba, KEYINPUT, readIO_internal(gba, KEYINPUT, WIDTH_16) | (1 << b), WIDTH_16)
-#define KEYINPUT_RESET(b)   writeIO_internal(gba, KEYINPUT, readIO_internal(gba, KEYINPUT, WIDTH_16) & ~(1 << b), WIDTH_16)
-
-    while (SDL_PollEvent(&event)) {
-        if (event.type == SDL_QUIT) {
-            gba->run = false;
-        } else if (event.type == SDL_KEYDOWN && event.key.repeat == 0) {
-            /* Handle keydown by updating KEYINPUT */
-            switch (event.key.keysym.scancode) {
-                case SDL_SCANCODE_DOWN: KEYINPUT_RESET(7); break;
-                case SDL_SCANCODE_UP: KEYINPUT_RESET(6); break;
-                case SDL_SCANCODE_LEFT: KEYINPUT_RESET(5); break;
-                case SDL_SCANCODE_RIGHT: KEYINPUT_RESET(4); break;
-
-                case SDL_SCANCODE_Z: KEYINPUT_RESET(0); break;
-                case SDL_SCANCODE_X: KEYINPUT_RESET(1); break;
-                case SDL_SCANCODE_RETURN: KEYINPUT_RESET(3); break;
-                case SDL_SCANCODE_TAB: KEYINPUT_RESET(2); break;
-                case SDL_SCANCODE_A: KEYINPUT_RESET(9); break;
-                case SDL_SCANCODE_S: KEYINPUT_RESET(8); break;
-
-                default: break;
-            }
-
-        } else if (event.type == SDL_KEYUP && event.key.repeat == 0) {
-            /* Handle keyup by updating KEYINPUT */
-            switch (event.key.keysym.scancode) {
-                case SDL_SCANCODE_DOWN: KEYINPUT_SET(7); break;
-                case SDL_SCANCODE_UP: KEYINPUT_SET(6); break;
-                case SDL_SCANCODE_LEFT: KEYINPUT_SET(5); break;
-                case SDL_SCANCODE_RIGHT: KEYINPUT_SET(4); break;
-
-                case SDL_SCANCODE_Z: KEYINPUT_SET(0); break;
-                case SDL_SCANCODE_X: KEYINPUT_SET(1); break;
-                case SDL_SCANCODE_RETURN: KEYINPUT_SET(3); break;
-                case SDL_SCANCODE_TAB: KEYINPUT_SET(2); break;
-                case SDL_SCANCODE_A: KEYINPUT_SET(9); break;
-                case SDL_SCANCODE_S: KEYINPUT_SET(8); break;
-
-                default: break;
-            }
-        }
-    }
-}
-
-void cleanSDL(GBA* gba) {
-    SDL_DestroyTexture(gba->SDL_Texture);
-	SDL_DestroyRenderer(gba->SDL_Renderer);
-    SDL_DestroyWindow(gba->SDL_Window);
-    SDL_Quit();
-
-	gba->SDL_Renderer = NULL;
-	gba->SDL_Window = NULL;
-    gba->SDL_Renderer = NULL;
-}
 
 /* ----------------------------------------------------- */
 
@@ -116,13 +33,18 @@ static void initialiseIO(GBA* gba) {
 
 /* ----------------------------------------------------- */
 
-void initialiseGBA(GBA* gba, GamePak* gamepak, uint8_t* biosBuffer, size_t biosSize) {
+void initialiseGBA(GBA* gba, GamePak* gamepak, uint8_t* biosBuffer, size_t biosSize, void (*frameEndCallback)(GBA* gba, void* context), void* context) {
+
+    if (frameEndCallback == NULL) {
+        printf("[FATAL] frameEndCallback() is NULL\n");
+        exit(88);
+    }
+
 	gba->gamepak = gamepak;
+    gba->frameEndCallback = frameEndCallback;
+    gba->context = context;
 	gba->run = false;
     gba->cycles = 0;
-    gba->SDL_Texture = NULL;
-	gba->SDL_Renderer = NULL;
-	gba->SDL_Window = NULL;
 
     /* Initialise all DMA related arrays of internal registers to 0 for DMA0-3 */
     gba->dmaInProgressMaster = false;
@@ -169,12 +91,6 @@ void initialiseGBA(GBA* gba, GamePak* gamepak, uint8_t* biosBuffer, size_t biosS
     initialisePPU(gba);
     initialiseIO(gba);
 
-	bool initSDL = initialiseSDL(gba);
-
-	if (!initSDL) {
-		printf("[FATAL] GBA cannot start without SDL2\n");
-		exit(120);
-	}
 
 #ifdef DEBUG_ENABLED
 	initDissembler();
@@ -182,8 +98,6 @@ void initialiseGBA(GBA* gba, GamePak* gamepak, uint8_t* biosBuffer, size_t biosS
 }
 
 void freeGBA(GBA* gba) {
-	cleanSDL(gba);
-
 	free(gba->IWRAM);
 	free(gba->EWRAM);
 	free(gba->IO);
@@ -201,32 +115,32 @@ void freeGBA(GBA* gba) {
 	gba->PaletteRAM = NULL;
 	gba->VRAM = NULL;
 	gba->OAM = NULL;
+
+    gba->frameEndCallback = NULL;
+    gba->context = NULL;
 }
 
-void startGBAEmulator(GamePak* gamepak, uint8_t* biosBuffer, size_t biosSize) {
-	GBA gba;
-	initialiseGBA(&gba, gamepak, biosBuffer, biosSize);
-
-	gba.run = true;
+void startGBAEmulator(GBA* gba) {
+	gba->run = true;
 	/* For now, we take each instruction as 1 cycle consumed */
 
-	while (gba.run) {
-        if (gba.dmaInProgressMaster) {
+	while (gba->run) {
+        if (gba->dmaInProgressMaster) {
             uint8_t N = 0;
             for (int i=0; i<4; i++) {
-                if (gba.dmaInProgress[i]) {
+                if (gba->dmaInProgress[i]) {
                     N = i;
                     break;
                 }
             }
 
-            stepDMA(&gba, N);
+            stepDMA(gba, N);
         } else {
-			stepCPU(&gba);
+			stepCPU(gba);
         }
 
         /* Handle scheduler events at CPU instruction boundary or DMA step boundary */
-        handleEvents(&gba);	
+        handleEvents(gba);	
 	}
 }
 

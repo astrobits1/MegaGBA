@@ -1,6 +1,7 @@
 #include <gba/gba.h>
 #include <gba/renderer.h>
-#include <SDL2/SDL.h>
+#include <string.h>
+#include <stdio.h>
 
 #define TILE_DATA_BASE_TEXT     0x10000
 #define TILE_DATA_BASE_BITMAP   0x14000
@@ -2099,15 +2100,8 @@ void stepPPU(GBA* gba) {
                         }
                     }
 
-					SDLEvents(gba);
-
-                    /* Update texture with framebuffer and render it at the end of frame */
-                    SDL_UpdateTexture(gba->SDL_Texture, NULL, &gba->framebuffer, WIDTH_PX*sizeof(uint16_t));
-
-                    SDL_RenderClear(gba->SDL_Renderer);
-                    SDL_RenderCopy(gba->SDL_Renderer, gba->SDL_Texture, NULL, NULL);
-					SDL_RenderPresent(gba->SDL_Renderer);
-                    
+                    /* FrameEndCallback call and pass context */
+                    gba->frameEndCallback(gba, gba->context); 
 				} else {
 					/* Latch DISPCNT if not entering VBLANK */
 					latchDISPCNT(gba);
