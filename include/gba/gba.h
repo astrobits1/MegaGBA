@@ -185,6 +185,8 @@ struct GBA {
     int32_t internalBG2Y;
     int32_t internalBG3X;
     int32_t internalBG3Y;
+    int32_t latchedInternalBG2Y;                /* For vertical mosaic in affine BGs */
+    int32_t latchedInternalBG3Y;
 	
 	uint8_t ppuVState; 					// Current Vertical State of PPU
 	uint8_t ppuHState; 					// Current Horizontal State of PPU

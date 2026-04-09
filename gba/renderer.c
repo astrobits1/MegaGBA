@@ -980,8 +980,26 @@ static bool computeBGRotScalScanline(GBA* gba, uint8_t N, uint16_t linebuffer[],
         return transparentPixelExists;
     }
 
+    uint16_t BGCNT = readIO_internal(gba, BG0CNT+2*N, WIDTH_16);
     int32_t BGX = N&1 ? gba->internalBG3X : gba->internalBG2X;
     int32_t BGY = N&1 ? gba->internalBG3Y : gba->internalBG2Y;
+    uint16_t mosaicEnabled = BGCNT >> 6 & 1;
+
+    if (mosaicEnabled) {
+        uint16_t MOS = readIO_internal(gba, MOSAIC, WIDTH_8);
+        uint8_t MOSV = MOS >> 4 & 0xF; 
+
+        if (MOSV > 0) {
+            /* Update latch */
+            if (gba->IO[VCOUNT] % (MOSV+1) == 0) {
+                if (N&1) gba->latchedInternalBG3Y = gba->internalBG3Y;
+                else gba->latchedInternalBG2Y = gba->internalBG2Y;
+            }
+
+            /* Use latched value */
+            BGY = N&1 ? gba->latchedInternalBG3Y : gba->latchedInternalBG2Y;
+        }
+    }
 
     /* BGPx are already exact 16 bit signed fixed point (16.8) */
     uint8_t base = (N&1) ? BG3PA : BG2PA;
@@ -1046,6 +1064,23 @@ static bool computeBGRotScalScanline(GBA* gba, uint8_t N, uint16_t linebuffer[],
         y += BGPC;
     }
 
+    /* Apply horizontal mosaic as an after effect to the final scanline */
+    if (mosaicEnabled) {
+        uint16_t MOS = readIO_internal(gba, MOSAIC, WIDTH_8);
+        uint8_t MOSH = MOS & 0xF;
+
+        if (MOSH > 0) {
+            for (int i=0; i<240; i++) {
+                uint8_t mosaicIndex = (MOSH+1)*(i/(MOSH+1));
+                uint16_t col = linebuffer[mosaicIndex];
+
+                linebuffer[i] = col;
+                gba->bgLayerLinebufferCache[N][i] = col;
+            }
+        }
+    }
+
+
     /* Reset to initial coordinates */
     x = BGX;
     y = BGY;
@@ -1061,6 +1096,7 @@ static bool computeBGRotScalScanline(GBA* gba, uint8_t N, uint16_t linebuffer[],
     if (N&1) {
         gba->internalBG3X = x;
         gba->internalBG3Y = y;
+
     } else {
         gba->internalBG2X = x;
         gba->internalBG2Y = y;
@@ -1861,6 +1897,8 @@ void initialisePPU(GBA* gba) {
     gba->internalBG2Y = 0;
     gba->internalBG3X = 0;
     gba->internalBG3Y = 0;
+    gba->latchedInternalBG2Y = 0;
+    gba->latchedInternalBG3Y = 0;
 
     /* Initialise framebuffer to full white */
     memset(&gba->framebuffer, 0xFF, WIDTH_PX*HEIGHT_PX*sizeof(uint16_t));
