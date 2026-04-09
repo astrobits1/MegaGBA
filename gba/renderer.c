@@ -8,6 +8,10 @@
 
 static void stackLayers(GBA* gba, uint8_t enabled, uint8_t exclude, bool spritesEnabled, bool sfxEnabled, uint8_t mode, uint16_t linebuffer[]);
 static void stackLayersBitmap(GBA* gba, bool bgEnabled, bool spritesEnabled, bool sfxEnabled, uint16_t linebuffer[], uint32_t mapDataBase, uint16_t noTilesPerRow, uint16_t noTilesPerCol, uint16_t (*getBGAffinePalette)(GBA*, uint32_t, uint32_t, int32_t, int32_t, uint16_t));
+
+static void computeAndDiscardBGRotScalLayers_Text(GBA* gba, uint8_t enabled, uint8_t exclude, uint8_t mode);
+static void computeAndDiscardBGRotScalLayer_Bitmap(GBA* gba, uint16_t noTilesPerRow, uint16_t noTilesPerCol, uint32_t mapDataBase, uint16_t (*getBGAffinePalette)(GBA*, uint32_t, uint32_t, int32_t, int32_t, uint16_t));
+
 static bool computeObjWindowScanline(GBA* gba, uint16_t linebuffer[], uint32_t tileDataBase);
 
 
@@ -354,7 +358,7 @@ static void computeAndOverlayWindowBitmap(GBA* gba, uint8_t layersEnabled, uint1
     if (X2 > 240 || X1 > X2) X2 = 240;
     if (X2 != 0) X2--;
 
-    uint8_t bgEnabled = layersEnabled & 0xF;
+    uint8_t bgEnabled = layersEnabled >> 3 & 1;
     uint8_t spritesEnabled = layersEnabled >> 4 & 1;
     uint8_t sfxEnabled = layersEnabled >> 5 & 1;
 
@@ -373,19 +377,20 @@ static void computeAndOverlayObjWindow(GBA* gba, uint16_t WOUT, uint16_t linebuf
   
     /* Compute all layers for obj win because affine background still requires normal
      * line wise computation and internal counter is incremented. Discard the result 
-     * if no obj window found, or render in it */
+     * if no obj window found, or render in it */ 
+
     uint8_t layersEnabled = WOUT >> 8 & 0x3F;
     uint8_t objWinBGEnabled = layersEnabled & 0xF;
-    uint8_t objWinSpritesEnabled = layersEnabled >> 4 & 1;
-    uint8_t objWinSFXEnabled = layersEnabled >> 5 & 1;
-
-    uint16_t objWindowLinebuffer[240];
-
-    stackLayers(gba, objWinBGEnabled, exclude, objWinSpritesEnabled, objWinSFXEnabled, mode, objWindowLinebuffer);
 
     bool foundObjWindowSprite = computeObjWindowScanline(gba, objWindowMask, TILE_DATA_BASE_TEXT); 
-    if (foundObjWindowSprite) {
-        
+    if (foundObjWindowSprite) {     
+        uint8_t objWinSpritesEnabled = layersEnabled >> 4 & 1;
+        uint8_t objWinSFXEnabled = layersEnabled >> 5 & 1;
+
+        uint16_t objWindowLinebuffer[240];
+
+        stackLayers(gba, objWinBGEnabled, exclude, objWinSpritesEnabled, objWinSFXEnabled, mode, objWindowLinebuffer);
+
         /* Mask obj window data */
         for (int i=0; i<240; i++) {
             uint16_t maskRGB = objWindowMask[i];
@@ -394,6 +399,8 @@ static void computeAndOverlayObjWindow(GBA* gba, uint16_t WOUT, uint16_t linebuf
                 linebuffer[i] = objWindowLinebuffer[i];
             }
         }
+    } else {
+        computeAndDiscardBGRotScalLayers_Text(gba, objWinBGEnabled, exclude, mode);
     }
 }
 
@@ -402,15 +409,16 @@ static void computeAndOverlayObjWindowBitmap(GBA* gba, uint16_t WOUT, uint16_t l
     repeatLoadFramebuffer(1 << 15, objWindowMask, 240);
 
     uint8_t layersEnabled = WOUT >> 8 & 0x3F;
-    uint8_t objWinBGEnabled = layersEnabled & 0xF;
-    uint8_t objWinSpritesEnabled = layersEnabled >> 4 & 1;
-    uint8_t objWinSFXEnabled = layersEnabled >> 5 & 1;
+    uint8_t objWinBGEnabled = layersEnabled >> 3 & 1; 
 
-    uint16_t objWindowLinebuffer[240];
-    stackLayersBitmap(gba, objWinBGEnabled, objWinSpritesEnabled, objWinSFXEnabled, objWindowLinebuffer, mapDataBase, noTilesPerRow, noTilesPerCol, getBGAffinePalette);
 
     bool foundObjWindowSprite = computeObjWindowScanline(gba, objWindowMask, TILE_DATA_BASE_BITMAP);
-    if (foundObjWindowSprite) { 
+    if (foundObjWindowSprite) {
+        uint8_t objWinSpritesEnabled = layersEnabled >> 4 & 1;
+        uint8_t objWinSFXEnabled = layersEnabled >> 5 & 1;
+        uint16_t objWindowLinebuffer[240];
+        stackLayersBitmap(gba, objWinBGEnabled, objWinSpritesEnabled, objWinSFXEnabled, objWindowLinebuffer, mapDataBase, noTilesPerRow, noTilesPerCol, getBGAffinePalette);
+
         /* Mask obj window data */
         for (int i=0; i<240; i++) {
             uint16_t maskRGB = objWindowMask[i];
@@ -418,6 +426,10 @@ static void computeAndOverlayObjWindowBitmap(GBA* gba, uint16_t WOUT, uint16_t l
                 /* Not transparent */
                 linebuffer[i] = objWindowLinebuffer[i];
             }
+        }
+    } else {
+        if (objWinBGEnabled) {
+            computeAndDiscardBGRotScalLayer_Bitmap(gba, noTilesPerRow, noTilesPerCol, mapDataBase, getBGAffinePalette);
         }
     }
 }
@@ -807,7 +819,7 @@ static bool computeSpriteScanline(GBA* gba, uint16_t linebuffer[], uint16_t semi
     /* Computes and stacks sprites between minPriority and maxPriority that are enabled on a single
      * linebuffer, filling the rest with transparent. Returns whether it found atleast a single
      * sprite that is enabled and visible in that range */
-    uint16_t DCNT = readIO_internal(gba, DISPCNT, WIDTH_16);
+    uint16_t DCNT = gba->latchedDISPCNT;
     uint8_t vramMapping = DCNT >> 6 & 1;
 
     bool spriteRendered = false;
@@ -1099,7 +1111,7 @@ static bool computeBGTextScanline(GBA* gba, uint8_t N, uint16_t linebuffer[]) {
     uint16_t BGCNT = readIO_internal(gba, BG0CNT+2*N, WIDTH_16);
     uint16_t BGHOFS = readIO_internal(gba, BG0HOFS+4*N, WIDTH_16);
     uint16_t BGVOFS = readIO_internal(gba, BG0VOFS+4*N, WIDTH_16);
-
+    uint16_t mosaicEnabled = BGCNT >> 6 & 1;
 
     /* Identify Character(Tile) data base block and Screen (BG Map) base block 
      * and extract rest of the parameters from BGCNT 
@@ -1120,13 +1132,22 @@ static bool computeBGTextScanline(GBA* gba, uint8_t N, uint16_t linebuffer[]) {
     /* A BG Map is a 32x32 tile (256x256 pixel) sequentially loaded array of 2 byte/tile index data 
      * There can be anywhere from 1 to 4 BG Maps loaded in VRAM based on screen size */
 
-    uint8_t yReal = gba->IO[VCOUNT];
-
     /* Text mode - screen size 0 - 32x32 tile (256x256 pixel) singular map specified at base */
 
     /* y is calculated by offseting VCOUNT by veritcal scroll and a modulo with 256 is applied
      * (full y is also modulo'd with 512) */
-    uint16_t y = (gba->IO[VCOUNT]+(BGVOFS & 0x1FF)) & 0x1FF;
+
+    uint16_t yRealEff = gba->IO[VCOUNT];
+
+    /* Apply vertical mosaic if necessary */
+    if (mosaicEnabled) {
+        uint16_t MOS = readIO_internal(gba, MOSAIC, WIDTH_8);
+        uint8_t MOSV = MOS >> 4 & 0xF;
+
+        yRealEff = (MOSV+1)*(yRealEff/(MOSV+1));
+    }
+
+    uint16_t y = (yRealEff+(BGVOFS & 0x1FF)) & 0x1FF;
 
     if (y > 0xFF) {
         /* Wrap around itself, or extend to SC1/SC2 depending on screen size 
@@ -1145,7 +1166,7 @@ static bool computeBGTextScanline(GBA* gba, uint8_t N, uint16_t linebuffer[]) {
                         
         }
     }
-
+ 
     //printf("yR: %d | y: %d | HOFS: %d | VOFS: %d\n", yReal, y, BGHOFS, BGVOFS);
     uint8_t pixelRow = y&0b111;                  /* 0-7 within tile */
     uint32_t tileRowsBefore = (y&(~0b111))/8;    /* No. of tile rows before the tile we are on */
@@ -1282,6 +1303,23 @@ static bool computeBGTextScanline(GBA* gba, uint8_t N, uint16_t linebuffer[]) {
         }
     }
 
+    /* Apply horizontal mosaic as an after effect to the final scanline, this conveniently avoids
+     * dealing with all the back and forth rendering edge case with flipped tiles */
+    if (mosaicEnabled) {
+        uint16_t MOS = readIO_internal(gba, MOSAIC, WIDTH_8);
+        uint8_t MOSH = MOS & 0xF;
+
+        if (MOSH > 0) {
+            for (int i=0; i<240; i++) {
+                uint8_t mosaicIndex = (MOSH+1)*(i/(MOSH+1));
+                uint16_t col = linebuffer[mosaicIndex];
+
+                linebuffer[i] = col;
+                gba->bgLayerLinebufferCache[N][i] = col;
+            }
+        }
+    }
+
     /* Data has been loaded in cache and can be used anytime in this scanline */
     gba->bgLayerLinebufferCacheUsed[N] = true;
     return transparentPixelExists;
@@ -1330,6 +1368,35 @@ static void computeAndPushBackSpriteLayers(GBA* gba, Compositor* comp, uint8_t p
         compositorPushBackLayer(comp, spriteLayer);
     }
 
+}
+
+
+static void computeAndDiscardBGRotScalLayers_Text(GBA* gba, uint8_t enabled, uint8_t exclude, uint8_t mode) {
+    /* Steps the internal counters of BG Affine layers as they should have if they were rendered
+     * but discards their results. This is useful when we need to step affine on Ys where any kind of
+     * window is not present but the windows themselves have affine backgrounds enabled which would
+     * require the internal BGX/Y counters to be set correctly */
+    uint8_t masterBGEnabled = gba->latchedDISPCNT >> 8 & 0xF;
+    enabled &= masterBGEnabled;
+
+    uint16_t temp[240];
+
+    for (int i=0; i<4; i++) {
+        if (enabled>>i&1 && !(exclude>>i&1) && ((mode>>i&1)==0)) {
+            /* Enabled, not excluded, rotation and scaling mode */
+            computeBGRotScalScanline_M1_M2(gba, i, temp);
+        }
+    }
+}
+
+static void computeAndDiscardBGRotScalLayer_Bitmap(GBA* gba, uint16_t noTilesPerRow, uint16_t noTilesPerCol, uint32_t mapDataBase, uint16_t (*getBGAffinePalette)(GBA*, uint32_t, uint32_t, int32_t, int32_t, uint16_t)) {
+    /* Computes and discards affine for bitmap */
+    bool masterBGEnabled = gba->latchedDISPCNT >> 10 & 1;
+    if (!masterBGEnabled) return;
+
+    uint16_t temp[240];
+
+    computeBGRotScalScanline(gba, 2, temp, mapDataBase, 0, noTilesPerRow, noTilesPerCol, 0, getBGAffinePalette);
 }
 
 /* Stacking is done for BG Modes 0-2 in this function
@@ -1495,29 +1562,40 @@ static void stackWindows(GBA* gba, uint16_t linebuffer[], uint8_t exclude, uint8
      * 'outside' but is enabled inside the window? (Depends on how the hardware internally processes
      * it, for which I need an example ROM for)
      *
-     * This might be noticable as bugs in some ROMs and if this is observed then this should
-     * be taken care of by computing window every scanline and then optionally choosing to
-     * render if window is in line, just like obj window */
+     * Currently we handle it by dealing with it like OBJ Window, computing only affines
+     * if we are not on window scanline.
+     *
+     * If affine BGs were to be disabled for outside but enabled for a window,
+     * this would yield the correct 'see through'. If however affines were disabled 
+     * on some scanlines for all windows or outside, then the counter will have no way to
+     * increment and this would cause a tear. This is intentionally left like this with the
+     * hypothesis that this is how it would work on hardware. */
 
     if (gba->latchedDISPCNT >> 14 & 1) {
         /* Window 1 enabled */
         uint16_t W1V = readIO_internal(gba, WIN1V, WIDTH_16);
+        uint8_t layersEnabled = WIN >> 8 & 0x3F;
+
         if (checkWindowInY(gba, W1V)) {
-            uint8_t layersEnabled = WIN >> 8 & 0x3F;
             uint16_t W1H = readIO_internal(gba, WIN1H, WIDTH_16);
 
             computeAndOverlayWindow(gba, layersEnabled, W1H, linebuffer, exclude, mode);
+        } else {
+            computeAndDiscardBGRotScalLayers_Text(gba, layersEnabled & 0xF, exclude, mode);
         }
     }
 
     if (gba->latchedDISPCNT >> 13 & 1) {
         /* Window 0 enabled */
         uint16_t W0V = readIO_internal(gba, WIN0V, WIDTH_16);
+        uint8_t layersEnabled = WIN & 0x3F;
+
         if (checkWindowInY(gba, W0V)) {
-            uint8_t layersEnabled = WIN & 0x3F;
             uint16_t W0H = readIO_internal(gba, WIN0H, WIDTH_16);
 
             computeAndOverlayWindow(gba, layersEnabled, W0H, linebuffer, exclude, mode);
+        } else {
+            computeAndDiscardBGRotScalLayers_Text(gba, layersEnabled & 0xF, exclude, mode);
         }
     }
 }
@@ -1543,23 +1621,32 @@ static void stackWindowsBitmap(GBA* gba, uint16_t linebuffer[], uint32_t mapData
 
     if (gba->latchedDISPCNT >> 14 & 1) {
         /* Window 1 enabled */
+        uint8_t layersEnabled = WIN >> 8 & 0x3F;
         uint16_t W1V = readIO_internal(gba, WIN1V, WIDTH_16);
         if (checkWindowInY(gba, W1V)) {
-            uint8_t layersEnabled = WIN >> 8 & 0x3F;
             uint16_t W1H = readIO_internal(gba, WIN1H, WIDTH_16);
 
             computeAndOverlayWindowBitmap(gba, layersEnabled, W1H, linebuffer, mapDataBase, noTilesPerRow, noTilesPerCol, getBGAffinePalette);
+        } else {
+            /* Only BG2 is concerned in bitmap modes */
+            if (layersEnabled >> 3 & 1) {
+                computeAndDiscardBGRotScalLayer_Bitmap(gba, noTilesPerRow, noTilesPerCol, mapDataBase, getBGAffinePalette);
+            }
         }
     }
 
     if (gba->latchedDISPCNT >> 13 & 1) {
         /* Window 0 enabled */
+        uint8_t layersEnabled = WIN & 0x3F;
         uint16_t W0V = readIO_internal(gba, WIN0V, WIDTH_16);
         if (checkWindowInY(gba, W0V)) {
-            uint8_t layersEnabled = WIN & 0x3F;
             uint16_t W0H = readIO_internal(gba, WIN0H, WIDTH_16);
 
             computeAndOverlayWindowBitmap(gba, layersEnabled, W0H, linebuffer, mapDataBase, noTilesPerRow, noTilesPerCol, getBGAffinePalette);
+        } else {
+            if (layersEnabled >> 3 & 1) {
+                computeAndDiscardBGRotScalLayer_Bitmap(gba, noTilesPerRow, noTilesPerCol, mapDataBase, getBGAffinePalette);
+            }
         }
     }
 }

@@ -97,6 +97,8 @@ typedef enum {
     WIN1V       = 0x46,
     WININ       = 0x48,
     WINOUT      = 0x4A,
+    
+    MOSAIC      = 0x4C,
 
     BLDCNT      = 0x50,
     BLDALPHA    = 0x52,
