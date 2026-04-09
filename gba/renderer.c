@@ -8,6 +8,9 @@
 
 static void stackLayers(GBA* gba, uint8_t enabled, uint8_t exclude, bool spritesEnabled, bool sfxEnabled, uint8_t mode, uint16_t linebuffer[]);
 static void stackLayersBitmap(GBA* gba, bool bgEnabled, bool spritesEnabled, bool sfxEnabled, uint16_t linebuffer[], uint32_t mapDataBase, uint16_t noTilesPerRow, uint16_t noTilesPerCol, uint16_t (*getBGAffinePalette)(GBA*, uint32_t, uint32_t, int32_t, int32_t, uint16_t));
+static bool computeObjWindowScanline(GBA* gba, uint16_t linebuffer[], uint32_t tileDataBase);
+
+static bool computeBGRotScalScanline_M1_M2(GBA* gba, uint8_t N, uint16_t linebuffer[]);
 
 static inline void latchDISPCNT(GBA* gba) {
 	uint16_t DISPCNT = readIO_internal(gba, DISPCNT, WIDTH_16);
@@ -227,6 +230,13 @@ static void compositorMerge(Compositor* comp, uint16_t linebuffer[], bool sfxEna
             case LAYER_SEMI_TRANSPARENT_SPRITE: printf("SEMI TRANSPARENT SPRITE\n"); break;
             case LAYER_BACKDROP: printf("BACKDROP\n"); break;
         }
+
+        if (l.type == LAYER_BG3) {
+            for (int i=0; i<240; i++) {
+                printf("%04x ", l.linebuffer[i]);
+            }
+            printf("\n");
+        }
     }
     printf("\n");
     */
@@ -357,12 +367,70 @@ static void computeAndOverlayWindowBitmap(GBA* gba, uint8_t layersEnabled, uint1
     uint8_t sfxEnabled = layersEnabled >> 5 & 1;
 
     uint16_t windowlinebuffer[240];
-    stackLayersBitmap(gba, bgEnabled, spritesEnabled, sfxEnabled, linebuffer, mapDataBase, noTilesPerRow, noTilesPerCol, getBGAffinePalette);
+    stackLayersBitmap(gba, bgEnabled, spritesEnabled, sfxEnabled, windowlinebuffer, mapDataBase, noTilesPerRow, noTilesPerCol, getBGAffinePalette);
 
     for (int x=X1; x<=X2; x++) {
         linebuffer[x] = windowlinebuffer[x];
     }
 }
+
+static void computeAndOverlayObjWindow(GBA* gba, uint16_t WOUT, uint16_t linebuffer[], uint8_t exclude, uint8_t mode) {
+    /* Should be called when OBJ Window is enabled */
+    uint16_t objWindowMask[240];
+    repeatLoadFramebuffer(1 << 15, objWindowMask, 240); 
+  
+    /* Compute all layers for obj win because affine background still requires normal
+     * line wise computation and internal counter is incremented. Discard the result 
+     * if no obj window found, or render in it */
+    uint8_t layersEnabled = WOUT >> 8 & 0x3F;
+    uint8_t objWinBGEnabled = layersEnabled & 0xF;
+    uint8_t objWinSpritesEnabled = layersEnabled >> 4 & 1;
+    uint8_t objWinSFXEnabled = layersEnabled >> 5 & 1;
+
+    uint16_t objWindowLinebuffer[240];
+
+    stackLayers(gba, objWinBGEnabled, exclude, objWinSpritesEnabled, objWinSFXEnabled, mode, objWindowLinebuffer);
+
+    bool foundObjWindowSprite = computeObjWindowScanline(gba, objWindowMask, TILE_DATA_BASE_TEXT); 
+    if (foundObjWindowSprite) {
+        
+        /* Mask obj window data */
+        for (int i=0; i<240; i++) {
+            uint16_t maskRGB = objWindowMask[i];
+            if (!(maskRGB >> 15 & 1)) {
+                /* Not transparent */
+                linebuffer[i] = objWindowLinebuffer[i];
+            }
+        }
+    }
+}
+
+static void computeAndOverlayObjWindowBitmap(GBA* gba, uint16_t WOUT, uint16_t linebuffer[], uint32_t mapDataBase, uint16_t noTilesPerRow, uint16_t noTilesPerCol, uint16_t (*getBGAffinePalette)(GBA*, uint32_t, uint32_t, int32_t, int32_t, uint16_t)) {
+    uint16_t objWindowMask[240];
+    repeatLoadFramebuffer(1 << 15, objWindowMask, 240);
+
+    uint8_t layersEnabled = WOUT >> 8 & 0x3F;
+    uint8_t objWinBGEnabled = layersEnabled & 0xF;
+    uint8_t objWinSpritesEnabled = layersEnabled >> 4 & 1;
+    uint8_t objWinSFXEnabled = layersEnabled >> 5 & 1;
+
+    uint16_t objWindowLinebuffer[240];
+    stackLayersBitmap(gba, objWinBGEnabled, objWinSpritesEnabled, objWinSFXEnabled, objWindowLinebuffer, mapDataBase, noTilesPerRow, noTilesPerCol, getBGAffinePalette);
+
+    bool foundObjWindowSprite = computeObjWindowScanline(gba, objWindowMask, TILE_DATA_BASE_BITMAP);
+    if (foundObjWindowSprite) { 
+        /* Mask obj window data */
+        for (int i=0; i<240; i++) {
+            uint16_t maskRGB = objWindowMask[i];
+            if (!(maskRGB >> 15 & 1)) {
+                /* Not transparent */
+                linebuffer[i] = objWindowLinebuffer[i];
+            }
+        }
+    }
+}
+
+
 
 /* ---------------------------- Sprites --------------------------------- */
 
@@ -678,6 +746,71 @@ static void computeSpriteRotScalScanline(GBA* gba, uint16_t linebuffer[], uint16
     }
 }
 
+static bool computeObjWindowScanline(GBA* gba, uint16_t linebuffer[], uint32_t tileDataBase) {
+    /* Compute mode 2 (obj window) sprites to create obj window mask. Priorities are completely
+     * disregarded and these sprites are not considered at all during normal OAM searches.
+     * We just need the obj window pixels to create a mask.
+     *
+     * VRAM Mapping mode and tileDataBase are necessary because correct tile data must be read
+     * and transparent pixels arent part of the mask*/
+ 
+    uint16_t DCNT = gba->latchedDISPCNT;
+    uint8_t vramMapping = DCNT >> 6 & 1;
+    bool found = false;
+
+    for (int i=127; i>=0; i--) {
+        //printf("OAM index: %d\n", i);
+        /* Scan OAM for sprites of a certain BG Priority */
+        uint32_t oamAddress = i*8;
+
+        uint16_t attr0 = readOAM_16(gba, i*8);
+        uint16_t attr1 = readOAM_16(gba, i*8+2);
+        uint16_t attr2 = readOAM_16(gba, i*8+4);
+
+        /* OBJ window and prohibited are skipped */
+        uint8_t mode = attr0 >> 10 & 0b11;
+        if (mode != 2) continue; 
+
+        uint8_t y_obj = attr0 & 0xFF;
+        uint8_t shape = attr0 >> 14 & 0b11;
+        uint8_t rotationAndScaling = attr0 >> 8 & 1;
+        uint8_t doubleSize = attr0 >> 9 & 1;
+
+        uint16_t x_obj = attr1 & 0x1FF;
+        uint8_t size = attr1 >> 14 & 0b11;
+
+        uint8_t height, width, y_objInternal;
+        uint16_t semiTransparentLayerMask[240];             /* Discarded */
+        getSpriteDimensions(size, shape, &width, &height);  
+
+        if (rotationAndScaling) {
+            /* Rotation and Scaling */
+            if (doubleSize) {
+                height *= 2;
+                width *= 2;
+            }
+            bool inBounds = checkSpriteVisibility(gba, height, width, x_obj, y_obj, &y_objInternal);
+            if (!inBounds) continue;
+
+            found = true;
+            computeSpriteRotScalScanline(gba, linebuffer, semiTransparentLayerMask, height, width, y_objInternal, x_obj, attr0, attr1, attr2, tileDataBase, vramMapping);
+        } else { 
+            /* Normal Mode */
+            /* OBJ disabled */ 
+            if ((attr0 >> 9 & 1)) continue; 
+
+            bool inBounds = checkSpriteVisibility(gba, height, width, x_obj, y_obj, &y_objInternal);
+            if (!inBounds) continue;
+
+            /* This sprite must be rendered, and we know its exact internal Y */
+            found = true;  
+            computeSpriteNormalScanline(gba, linebuffer, semiTransparentLayerMask, height, width, y_objInternal, x_obj, attr0, attr1, attr2, tileDataBase, vramMapping);
+        }
+    }
+ 
+    return found;
+}
+
 static bool computeSpriteScanline(GBA* gba, uint16_t linebuffer[], uint16_t semiTransparentLayerMask[], bool* foundSemiTransparent, uint8_t minPriority, uint8_t maxPriority, uint32_t tileDataBase) {
     /* Computes and stacks sprites between minPriority and maxPriority that are enabled on a single
      * linebuffer, filling the rest with transparent. Returns whether it found atleast a single
@@ -714,7 +847,7 @@ static bool computeSpriteScanline(GBA* gba, uint16_t linebuffer[], uint16_t semi
             /* Not same BG Priority */
             if ((attr2 >> 10 & 0b11) != p) continue;
 
-            /* Other OBJ modes are not supported for now */
+            /* OBJ window and prohibited are skipped */
             uint8_t mode = attr0 >> 10 & 0b11;
             if (mode >= 2) continue;
 
@@ -1351,13 +1484,22 @@ static void stackWindows(GBA* gba, uint16_t linebuffer[], uint8_t exclude, uint8
     uint8_t outSpritesEnabled = outLayersEnabled >> 4 & 1;
     uint8_t outSFXEnabled = outLayersEnabled >> 5 & 1;
 
+    uint8_t bgEnabled = gba->latchedDISPCNT >> 8 & 0xF;
+    bool spritesEnabled = gba->latchedDISPCNT >> 12 & 1;
 
+    //printf("Main: %x\n", bgEnabled); 
+    
     //printf("DISP: %02x\n", readIO_internal(gba, DISPCNT, WIDTH_16) >> 8);
     //printf("Out Layers: %02x\n", outLayersEnabled);
     /* Load outside window layer */
     stackLayers(gba, outBGEnabled, exclude, outSpritesEnabled, outSFXEnabled, mode, linebuffer);
 
-    /* Window 0 has highest priority, followed by Window 1 and outside window */
+    /* Window 0 has highest priority, followed by Window 1, OBJ Window and outside window */
+    if (gba->latchedDISPCNT >> 15 & 1) {
+        /* OBJ Window enabled */
+        computeAndOverlayObjWindow(gba, WOUT, linebuffer, exclude, mode);
+    }
+
     if (gba->latchedDISPCNT >> 14 & 1) {
         /* Window 1 enabled */
         uint16_t W1V = readIO_internal(gba, WIN1V, WIDTH_16);
@@ -1393,6 +1535,12 @@ static void stackWindowsBitmap(GBA* gba, uint16_t linebuffer[], uint32_t mapData
     stackLayersBitmap(gba, outBGEnabled, outSpritesEnabled, outSFXEnabled, linebuffer, mapDataBase, noTilesPerRow, noTilesPerCol, getBGAffinePalette);
 
     /* Window 0 has highest priority, followed by Window 1 and outside window */
+
+    if (gba->latchedDISPCNT >> 15 & 1) {
+        /* OBJ Window enabled */
+        computeAndOverlayObjWindowBitmap(gba, WOUT, linebuffer, mapDataBase, noTilesPerRow, noTilesPerCol, getBGAffinePalette);
+    }
+
     if (gba->latchedDISPCNT >> 14 & 1) {
         /* Window 1 enabled */
         uint16_t W1V = readIO_internal(gba, WIN1V, WIDTH_16);
@@ -1444,7 +1592,7 @@ static void renderBGMode0Scanline(GBA* gba) {
     uint16_t linebuffer[240];
     
 
-    uint8_t windowEnabled = gba->latchedDISPCNT >> 13 & 0b011;
+    uint8_t windowEnabled = gba->latchedDISPCNT >> 13 & 0b111;
     if (windowEnabled > 0) {
         /* Window is enabled, stack WIN0, WIN1 and outside based on priority onto final buffer */
         
@@ -1469,7 +1617,7 @@ static void renderBGMode1Scanline(GBA* gba) {
     uint8_t mode = 0b0011;
     uint16_t linebuffer[240];
 
-    uint8_t windowEnabled = gba->latchedDISPCNT >> 13 & 0b011;
+    uint8_t windowEnabled = gba->latchedDISPCNT >> 13 & 0b111;
     if (windowEnabled > 0) {
         /* Window is enabled, stack WIN0, WIN1 and outside based on priority onto final buffer */
         //printf("%d %d %d %d\n", exclude[3], exclude[2], exclude[1], exclude[0]);
@@ -1494,7 +1642,7 @@ static void renderBGMode2Scanline(GBA* gba) {
     uint8_t mode = 0b0000;
     uint16_t linebuffer[240];
 
-    uint8_t windowEnabled = gba->latchedDISPCNT >> 13 & 0b011;
+    uint8_t windowEnabled = gba->latchedDISPCNT >> 13 & 0b111;
     if (windowEnabled > 0) {
         /* Window is enabled, stack WIN0, WIN1 and outside based on priority onto final buffer */
 
@@ -1527,7 +1675,7 @@ static void renderBGMode3Scanline(GBA* gba) {
     
     uint16_t linebuffer[240];
 
-    uint8_t windowEnabled = gba->latchedDISPCNT >> 13 & 0b011;
+    uint8_t windowEnabled = gba->latchedDISPCNT >> 13 & 0b111;
     if (windowEnabled > 0) {
         /* Window is enabled, stack WIN0 and WIN1 based on priority onto final buffer */
         stackWindowsBitmap(gba, linebuffer, 0x0000, 30, 20, getBGAffinePalette_M3);
@@ -1556,7 +1704,7 @@ static void renderBGMode4Scanline(GBA* gba) {
     uint16_t linebuffer[240];
 	uint32_t base = (gba->latchedDISPCNT >> 4 & 1) ? 0xA000 : 0x0000;
 
-    uint8_t windowEnabled = gba->latchedDISPCNT >> 13 & 0b011;
+    uint8_t windowEnabled = gba->latchedDISPCNT >> 13 & 0b111;
     if (windowEnabled > 0) {
         /* Window is enabled, stack WIN0 and WIN1 based on priority onto final buffer */
         stackWindowsBitmap(gba, linebuffer, base, 30, 20, getBGAffinePalette_M4);
@@ -1580,7 +1728,7 @@ static void renderBGMode5Scanline(GBA* gba) {
     uint16_t linebuffer[240];
 	uint32_t base = (gba->latchedDISPCNT >> 4 & 1) ? 0xA000 : 0x0000;
 
-    uint8_t windowEnabled = gba->latchedDISPCNT >> 13 & 0b011;
+    uint8_t windowEnabled = gba->latchedDISPCNT >> 13 & 0b111;
     if (windowEnabled > 0) {
         /* Window is enabled, stack WIN0 and WIN1 based on priority onto final buffer */
         stackWindowsBitmap(gba, linebuffer, base, 20, 16, getBGAffinePalette_M5);
@@ -1631,7 +1779,10 @@ void initialisePPU(GBA* gba) {
     memset(&gba->framebuffer, 0xFF, WIDTH_PX*HEIGHT_PX*sizeof(uint16_t));
 
     /* Set cache slots to free */
-    memset(&gba->bgLayerLinebufferCacheUsed, 0, sizeof(uint16_t)*4);
+    gba->bgLayerLinebufferCacheUsed[0] = false;
+    gba->bgLayerLinebufferCacheUsed[1] = false;
+    gba->bgLayerLinebufferCacheUsed[2] = false;
+    gba->bgLayerLinebufferCacheUsed[3] = false;
 
     latchDISPCNT(gba);
 
@@ -1704,7 +1855,10 @@ void stepPPU(GBA* gba) {
 				}
 
                 /* Clear cache after scanline */
-                memset(&gba->bgLayerLinebufferCacheUsed, 0, sizeof(uint16_t)*4);
+                gba->bgLayerLinebufferCacheUsed[0] = false;
+                gba->bgLayerLinebufferCacheUsed[1] = false;
+                gba->bgLayerLinebufferCacheUsed[2] = false;
+                gba->bgLayerLinebufferCacheUsed[3] = false;
 
 				/* Switch to HBLANK - TODO HBLANK flag is set late */
 				gba->IO[DISPSTAT] |= 0b10;
