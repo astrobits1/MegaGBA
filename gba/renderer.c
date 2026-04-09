@@ -566,6 +566,7 @@ static void computeSpriteNormalScanline(GBA* gba, uint16_t linebuffer[], uint16_
     /* Compute a normal non-affine sprite */
 
     uint8_t mode = attr0 >> 10 & 0b11;
+    uint8_t mosaicEnabled = attr0 >> 12 & 1;
     uint8_t hFlip = attr1 >> 12 & 1;
     uint8_t vFlip = attr1 >> 13 & 1;
     uint16_t tileIndex = attr2 & 0x3FF;
@@ -573,15 +574,53 @@ static void computeSpriteNormalScanline(GBA* gba, uint16_t linebuffer[], uint16_
     uint8_t paletteMode = attr0 >> 13 & 1;          /* 256/1 or 16/16 */
     bool completed = false;
 
+    uint16_t MOS = readIO_internal(gba, MOSAIC, WIDTH_16);
+    uint8_t MOSH = MOS >> 8 & 0xF;
+    uint8_t MOSV = MOS >> 12 & 0xF;
+
+    /* Handle vertical mosaic */
+    if (mosaicEnabled) {    
+        y_objInternal = (MOSV+1)*(y_objInternal/(MOSV+1));
+    }
+
     uint8_t noTileRowsBefore = (y_objInternal & ~0b111)/8;
     uint8_t startTile = 0;
     uint8_t startPixel = 0;
+
+    uint8_t latchedMosaicPaletteIndex = 0;
+    uint16_t latchedMosaicPalette = 0;
 
     if (x_obj >= 240) {
         /* Some wrap around is happening as we are still in horizontal bounds */
         uint16_t noPixelsToSkip = 512-x_obj;
         startTile = (noPixelsToSkip & ~0b111)/8;
         startPixel = noPixelsToSkip & 0b111;
+
+        /* If horizontal mosaic is enabled and effective, calculate the initial value of
+         * the mosaic palette in case sprite is truncated to the left */
+        if (mosaicEnabled && MOSH > 0) {
+            uint16_t mosaicPixel = (MOSH+1)*((noPixelsToSkip-1)/(MOSH+1))+1;
+            uint8_t mosaicTile = (mosaicPixel & ~0b111)/8;
+            uint8_t mosaicPixelInternal = mosaicPixel & 0b111;
+
+            uint8_t yInternal = vFlip ? (height*8-1)-y_objInternal : y_objInternal;
+            uint8_t mosaicPaletteIndex;
+            uint16_t mosaicRGB;
+
+            if (paletteMode == PALETTE_256_1_8BIT) {
+                uint64_t rowData = getSpriteRowData_8bit(gba, vramMapping, tileDataBase, tileIndex, width, hFlip ? (width-1)-mosaicTile : mosaicTile, yInternal);
+                mosaicPaletteIndex = rowData>>((hFlip?(7-mosaicPixelInternal):mosaicPixelInternal)*8)&0xFF;
+                mosaicRGB = readSpritePaletteRAM(gba, mosaicPaletteIndex);
+            } else {
+                uint64_t rowData = getSpriteRowData_4bit(gba, vramMapping, tileDataBase, tileIndex, width, hFlip ? (width-1)-mosaicTile : mosaicTile, yInternal); 
+                mosaicPaletteIndex = rowData>>((hFlip?(7-mosaicPixelInternal):mosaicPixelInternal)*4)&0xF;
+                mosaicRGB = readSpritePaletteRAM(gba, 16*paletteNum+mosaicPaletteIndex);
+            }
+
+            /* Calculated initial mosaic latched value */
+            latchedMosaicPalette = mosaicRGB;
+            latchedMosaicPaletteIndex = mosaicPaletteIndex;
+        }
     }
 
     for (int tile=startTile; tile<width; tile++) {
@@ -595,17 +634,33 @@ static void computeSpriteNormalScanline(GBA* gba, uint16_t linebuffer[], uint16_
         }
 
         for (int xInternal = tile==startTile ? startPixel:0; xInternal<8; xInternal++) {
+            uint8_t xInternalSprite = tile*8+xInternal;
             uint8_t xReal = (x_obj>=240?0:x_obj)+(tile-startTile)*8+xInternal-startPixel;
             uint8_t paletteIndex;
             uint16_t rgb;
 
-            if (paletteMode == PALETTE_256_1_8BIT) {
-                paletteIndex = rowData>>((hFlip?(7-xInternal):xInternal)*8)&0xFF;
-                rgb = readSpritePaletteRAM(gba, paletteIndex);
+            if (mosaicEnabled && MOSH > 0) {
+                if (xInternalSprite % (MOSH+1) == 0) {
+                    if (paletteMode == PALETTE_256_1_8BIT) {
+                        latchedMosaicPaletteIndex = rowData>>((hFlip?(7-xInternal):xInternal)*8)&0xFF;
+                        latchedMosaicPalette = readSpritePaletteRAM(gba, latchedMosaicPaletteIndex);
+                    } else {
+                        latchedMosaicPaletteIndex = rowData>>((hFlip?(7-xInternal):xInternal)*4)&0xF;
+                        latchedMosaicPalette = readSpritePaletteRAM(gba, 16*paletteNum+latchedMosaicPaletteIndex);
+                    }
+                }
+
+                paletteIndex = latchedMosaicPaletteIndex;
+                rgb = latchedMosaicPalette;
             } else {
-                paletteIndex = rowData>>((hFlip?(7-xInternal):xInternal)*4)&0xF;
-                rgb = readSpritePaletteRAM(gba, 16*paletteNum+paletteIndex);
-           }
+                if (paletteMode == PALETTE_256_1_8BIT) {
+                    paletteIndex = rowData>>((hFlip?(7-xInternal):xInternal)*8)&0xFF;
+                    rgb = readSpritePaletteRAM(gba, paletteIndex);
+                } else {
+                    paletteIndex = rowData>>((hFlip?(7-xInternal):xInternal)*4)&0xF;
+                    rgb = readSpritePaletteRAM(gba, 16*paletteNum+paletteIndex);
+                }
+            }
 
             //printf("xReal: %d|p: %d||pn: %d|c: %04x\n", xReal, paletteIndex, paletteNum, rgb);
 
@@ -985,10 +1040,18 @@ static bool computeBGRotScalScanline(GBA* gba, uint8_t N, uint16_t linebuffer[],
     int32_t BGY = N&1 ? gba->internalBG3Y : gba->internalBG2Y;
     uint16_t mosaicEnabled = BGCNT >> 6 & 1;
 
-    if (mosaicEnabled) {
-        uint16_t MOS = readIO_internal(gba, MOSAIC, WIDTH_8);
-        uint8_t MOSV = MOS >> 4 & 0xF; 
+    uint16_t MOS = readIO_internal(gba, MOSAIC, WIDTH_8);
+    uint8_t MOSV = MOS >> 4 & 0xF;
+    uint8_t MOSH = MOS & 0xF;
+ 
+    /* BGPx are already exact 16 bit signed fixed point (16.8) */
+    uint8_t base = (N&1) ? BG3PA : BG2PA;
+    int16_t BGPA = (int16_t)(readIO_internal(gba, base, WIDTH_16));
+    int16_t BGPB = (int16_t)(readIO_internal(gba, base+2, WIDTH_16));
+    int16_t BGPC = (int16_t)(readIO_internal(gba, base+4, WIDTH_16));
+    int16_t BGPD = (int16_t)(readIO_internal(gba, base+6, WIDTH_16));
 
+    if (mosaicEnabled) {
         if (MOSV > 0) {
             /* Update latch */
             if (gba->IO[VCOUNT] % (MOSV+1) == 0) {
@@ -1001,12 +1064,6 @@ static bool computeBGRotScalScanline(GBA* gba, uint8_t N, uint16_t linebuffer[],
         }
     }
 
-    /* BGPx are already exact 16 bit signed fixed point (16.8) */
-    uint8_t base = (N&1) ? BG3PA : BG2PA;
-    int16_t BGPA = (int16_t)(readIO_internal(gba, base, WIDTH_16));
-    int16_t BGPB = (int16_t)(readIO_internal(gba, base+2, WIDTH_16));
-    int16_t BGPC = (int16_t)(readIO_internal(gba, base+4, WIDTH_16));
-    int16_t BGPD = (int16_t)(readIO_internal(gba, base+6, WIDTH_16));
 
     //printf("y: %d|BX: %d|BY: %d|PA: %04x|PB: %04x|PC: %04x|PD: %04x|npx: %d\n", gba->IO[VCOUNT], (int)BGX>>8, (int)BGY>>8, BGPA, BGPB, BGPC, BGPD, noTilesPerRow*8);
 
@@ -1065,10 +1122,7 @@ static bool computeBGRotScalScanline(GBA* gba, uint8_t N, uint16_t linebuffer[],
     }
 
     /* Apply horizontal mosaic as an after effect to the final scanline */
-    if (mosaicEnabled) {
-        uint16_t MOS = readIO_internal(gba, MOSAIC, WIDTH_8);
-        uint8_t MOSH = MOS & 0xF;
-
+    if (mosaicEnabled) { 
         if (MOSH > 0) {
             for (int i=0; i<240; i++) {
                 uint8_t mosaicIndex = (MOSH+1)*(i/(MOSH+1));
@@ -1081,25 +1135,16 @@ static bool computeBGRotScalScanline(GBA* gba, uint8_t N, uint16_t linebuffer[],
     }
 
 
-    /* Reset to initial coordinates */
-    x = BGX;
-    y = BGY;
-
-    // dy
-    x += BGPB;
-    // dmy
-    y += BGPD;
-
     /* Update internal scroll registers with new dy and dmy increments, for next scanline
      * Hardware register value is still unchanged and will overwrite the internal register
      * at every write to it and at the end of VBLANK */
     if (N&1) {
-        gba->internalBG3X = x;
-        gba->internalBG3Y = y;
+        gba->internalBG3X += BGPB;
+        gba->internalBG3Y += BGPD;
 
     } else {
-        gba->internalBG2X = x;
-        gba->internalBG2Y = y;
+        gba->internalBG2X += BGPB;
+        gba->internalBG2Y += BGPD;
     }
 
     gba->bgLayerLinebufferCacheUsed[N] = true;
