@@ -1,7 +1,6 @@
 #include <gba/gba.h>
 #include <gba/renderer.h>
 #include <SDL2/SDL.h>
-#include <unistd.h>
 
 #define TILE_DATA_BASE_TEXT     0x10000
 #define TILE_DATA_BASE_BITMAP   0x14000
@@ -2108,16 +2107,6 @@ void stepPPU(GBA* gba) {
                     SDL_RenderClear(gba->SDL_Renderer);
                     SDL_RenderCopy(gba->SDL_Renderer, gba->SDL_Texture, NULL, NULL);
 					SDL_RenderPresent(gba->SDL_Renderer);
-
-
-                   
-                    uint64_t ticksCurrent = clock_u();
-                    double diff = (1e6/60)-(ticksCurrent-gba->ticksAtLastFrame);
-                    //gba->ticksAtLastFrame = ticksCurrent;
-                    if (diff > 0) usleep(diff);
-
-                    //printf("fps: %g|cycles: %lu\n", 1/((clock_u()-gba->ticksAtLastFrame)/1e6), gba->cycles);
-                    gba->ticksAtLastFrame = ticksCurrent;
                     
 				} else {
 					/* Latch DISPCNT if not entering VBLANK */

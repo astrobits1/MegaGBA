@@ -5,21 +5,11 @@
 #include <gba/renderer.h>
 #include <SDL2/SDL.h>
 #include <stdio.h>
-#include <sys/time.h>
 
 static void reloadDMAInternal(GBA* gba, uint8_t N);
 static void stepDMA(GBA* gba, uint8_t N);
 
 static void handleEvents(GBA* gba);
-
-/* Utility */
-unsigned long clock_u() {
-    /* Function to get time with microsecond precision */
-    struct timeval t;
-    gettimeofday(&t, NULL);
-
-    return (t.tv_sec * 1e6 + t.tv_usec);
-}
 
 /* ------------------------------------------------------------------- */
 
@@ -130,8 +120,6 @@ void initialiseGBA(GBA* gba, GamePak* gamepak, uint8_t* biosBuffer, size_t biosS
 	gba->gamepak = gamepak;
 	gba->run = false;
     gba->cycles = 0;
-    gba->ticksAtBoot = 0;
-    gba->ticksAtLastFrame = 0;
     gba->SDL_Texture = NULL;
 	gba->SDL_Renderer = NULL;
 	gba->SDL_Window = NULL;
@@ -220,8 +208,6 @@ void startGBAEmulator(GamePak* gamepak, uint8_t* biosBuffer, size_t biosSize) {
 	initialiseGBA(&gba, gamepak, biosBuffer, biosSize);
 
 	gba.run = true;
-    gba.ticksAtBoot = clock_u();
-    gba.ticksAtLastFrame = gba.ticksAtBoot;
 	/* For now, we take each instruction as 1 cycle consumed */
 
 	while (gba.run) {
@@ -242,12 +228,6 @@ void startGBAEmulator(GamePak* gamepak, uint8_t* biosBuffer, size_t biosSize) {
         /* Handle scheduler events at CPU instruction boundary or DMA step boundary */
         handleEvents(&gba);	
 	}
-
-    uint64_t ticksFinal = clock_u();
-    double elapsedS = (ticksFinal - gba.ticksAtBoot)/1e6;
-    double clockFreqMHZ = gba.cycles/(elapsedS*1e6);
-
-    printf("Runtime: %g secs | Cycles: %lu | Mean Clock Freq: %g MHz\n", elapsedS, gba.cycles, clockFreqMHZ);
 }
 
 /* -------- Bus Functions --------- */

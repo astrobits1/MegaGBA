@@ -199,8 +199,6 @@ struct GBA {
 										   about the game */
 	bool run; 							/* Flag used to stop the emulator and check if its running */
     uint64_t cycles;                    /* Cycle counter */
-    uint64_t ticksAtLastFrame;          /* Ticks elapsed since last frame render */
-    uint64_t ticksAtBoot;               /* Ticks since start of emulator from clock_u() */
 
 	/* Allocations */
     uint8_t* biosROM;
@@ -260,8 +258,5 @@ void startDMA(GBA* gba, uint8_t N);
 void pushEvent(GBA* gba, GBAEvent event);
 GBAEvent peekEvent(GBA* gba, uint8_t index);
 GBAEvent popEvent(GBA* gba);
-
-/* Utility */
-unsigned long clock_u();
 
 #endif
