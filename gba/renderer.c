@@ -687,12 +687,22 @@ static void computeSpriteNormalScanline(GBA* gba, uint16_t linebuffer[], uint16_
 
 static void computeSpriteRotScalScanline(GBA* gba, uint16_t linebuffer[], uint16_t semiTransparentLayerMask[], uint8_t height, uint8_t width, uint8_t y_objInternal, uint16_t x_obj, uint16_t attr0, uint16_t attr1, uint16_t attr2, uint32_t tileDataBase, uint8_t vramMapping) {
     uint8_t mode = attr0 >> 10 & 0b11;
+    uint8_t mosaicEnabled = attr0 >> 12 & 1;
     uint16_t tileIndex = attr2 & 0x3FF;
     uint8_t paletteNum = attr2 >> 12 & 0xF;         /* For 16/16 palettes only */
     uint8_t paletteMode = attr0 >> 13 & 1;          /* 256/1 or 16/16 */
 
     uint8_t doubleSize = attr0 >> 9 & 1;
     uint8_t affineParameterGroup = attr1 >> 9 & 0x1F;
+
+    uint16_t MOS = readIO_internal(gba, MOSAIC, WIDTH_16);
+    uint8_t MOSH = MOS >> 8 & 0xF;
+    uint8_t MOSV = MOS >> 12 & 0xF;
+
+    /* Handle vertical mosaic */
+    if (mosaicEnabled) {    
+        y_objInternal = (MOSV+1)*(y_objInternal/(MOSV+1));
+    }
 
     /* Load affine parameters */
     int16_t PA = (int16_t)readOAM_16(gba, affineParameterGroup*0x20+0x6);
@@ -763,7 +773,17 @@ static void computeSpriteRotScalScanline(GBA* gba, uint16_t linebuffer[], uint16
         y += PC;
     }
 
-    /* Sprite rendering complete, now copy visible parts to main buffer */
+    /* Sprite rendering complete, now handle horizontal mosaic */
+    if (mosaicEnabled) {
+        if (MOSH > 0) {
+            for (int i=0; i<width*8; i++) {
+                uint8_t mosaicIndex = (MOSH+1)*(i/(MOSH+1));
+                spritebuffer[i] = spritebuffer[mosaicIndex];
+            }
+        }
+    }
+
+     /* now copy visible parts to main buffer */
     if (x_obj >= 240) {
         uint16_t noPixelsToSkip = 512-x_obj;
 
