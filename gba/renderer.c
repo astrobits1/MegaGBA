@@ -10,7 +10,6 @@ static void stackLayers(GBA* gba, uint8_t enabled, uint8_t exclude, bool sprites
 static void stackLayersBitmap(GBA* gba, bool bgEnabled, bool spritesEnabled, bool sfxEnabled, uint16_t linebuffer[], uint32_t mapDataBase, uint16_t noTilesPerRow, uint16_t noTilesPerCol, uint16_t (*getBGAffinePalette)(GBA*, uint32_t, uint32_t, int32_t, int32_t, uint16_t));
 static bool computeObjWindowScanline(GBA* gba, uint16_t linebuffer[], uint32_t tileDataBase);
 
-static bool computeBGRotScalScanline_M1_M2(GBA* gba, uint8_t N, uint16_t linebuffer[]);
 
 static inline void latchDISPCNT(GBA* gba) {
 	uint16_t DISPCNT = readIO_internal(gba, DISPCNT, WIDTH_16);
@@ -230,17 +229,9 @@ static void compositorMerge(Compositor* comp, uint16_t linebuffer[], bool sfxEna
             case LAYER_SEMI_TRANSPARENT_SPRITE: printf("SEMI TRANSPARENT SPRITE\n"); break;
             case LAYER_BACKDROP: printf("BACKDROP\n"); break;
         }
-
-        if (l.type == LAYER_BG3) {
-            for (int i=0; i<240; i++) {
-                printf("%04x ", l.linebuffer[i]);
-            }
-            printf("\n");
-        }
     }
     printf("\n");
     */
-
     for (int i=0; i<240; i++) {
         uint8_t topLayerIndex = -1;
         Layer topLayer;
@@ -329,9 +320,10 @@ static bool checkWindowInY(GBA* gba, uint16_t WV) {
 
     if (Y2 > 160) Y2 = 160;
     if (Y1 > Y2) Y2 = 160;
+    if (Y2 != 0) Y2--;
 
     /* Window is confined between [Y1, Y2] */
-    if (gba->IO[VCOUNT] >= Y1 && gba->IO[VCOUNT] <= Y2-1) {
+    if (gba->IO[VCOUNT] >= Y1 && gba->IO[VCOUNT] <= Y2) {
         return true;
     }
 
@@ -342,7 +334,7 @@ static void computeAndOverlayWindow(GBA* gba, uint8_t layersEnabled, uint16_t WH
     uint8_t X1 = WH >> 8 & 0xFF;
     uint8_t X2 = WH & 0xFF;
     if (X2 > 240 || X1 > X2) X2 = 240;
-    X2--;
+    if (X2 != 0) X2--;
 
     uint8_t bgEnabled = layersEnabled & 0xF;
     uint8_t spritesEnabled = layersEnabled >> 4 & 1;
@@ -360,7 +352,7 @@ static void computeAndOverlayWindowBitmap(GBA* gba, uint8_t layersEnabled, uint1
     uint8_t X1 = WH >> 8 & 0xFF;
     uint8_t X2 = WH & 0xFF;
     if (X2 > 240 || X1 > X2) X2 = 240;
-    X2--;
+    if (X2 != 0) X2--;
 
     uint8_t bgEnabled = layersEnabled & 0xF;
     uint8_t spritesEnabled = layersEnabled >> 4 & 1;
@@ -1487,11 +1479,8 @@ static void stackWindows(GBA* gba, uint16_t linebuffer[], uint8_t exclude, uint8
     uint8_t bgEnabled = gba->latchedDISPCNT >> 8 & 0xF;
     bool spritesEnabled = gba->latchedDISPCNT >> 12 & 1;
 
-    //printf("Main: %x\n", bgEnabled); 
-    
-    //printf("DISP: %02x\n", readIO_internal(gba, DISPCNT, WIDTH_16) >> 8);
-    //printf("Out Layers: %02x\n", outLayersEnabled);
     /* Load outside window layer */
+
     stackLayers(gba, outBGEnabled, exclude, outSpritesEnabled, outSFXEnabled, mode, linebuffer);
 
     /* Window 0 has highest priority, followed by Window 1, OBJ Window and outside window */
@@ -1499,6 +1488,16 @@ static void stackWindows(GBA* gba, uint16_t linebuffer[], uint8_t exclude, uint8
         /* OBJ Window enabled */
         computeAndOverlayObjWindow(gba, WOUT, linebuffer, exclude, mode);
     }
+
+    /* Just like OBJ Window, affine bgs used in normal windows should also be ticked
+     * every scanline regardless of whether the window is visible or not. Or should affine BGs
+     * start ticking at the start of the window for example if the BG layer was disabled for
+     * 'outside' but is enabled inside the window? (Depends on how the hardware internally processes
+     * it, for which I need an example ROM for)
+     *
+     * This might be noticable as bugs in some ROMs and if this is observed then this should
+     * be taken care of by computing window every scanline and then optionally choosing to
+     * render if window is in line, just like obj window */
 
     if (gba->latchedDISPCNT >> 14 & 1) {
         /* Window 1 enabled */
@@ -1517,6 +1516,7 @@ static void stackWindows(GBA* gba, uint16_t linebuffer[], uint8_t exclude, uint8
         if (checkWindowInY(gba, W0V)) {
             uint8_t layersEnabled = WIN & 0x3F;
             uint16_t W0H = readIO_internal(gba, WIN0H, WIDTH_16);
+
             computeAndOverlayWindow(gba, layersEnabled, W0H, linebuffer, exclude, mode);
         }
     }
