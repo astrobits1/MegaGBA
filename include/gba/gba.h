@@ -131,6 +131,20 @@ typedef enum {
     HALTCNT     = 0x301
 } IO_REG;
 
+/* Mapped to KEYINPUT bits */
+typedef enum {
+    KEYINPUT_A,
+    KEYINPUT_B,
+    KEYINPUT_SELECT,
+    KEYINPUT_START,
+    KEYINPUT_DPRIGHT,
+    KEYINPUT_DPLEFT,
+    KEYINPUT_DPUP,
+    KEYINPUT_DPDOWN,
+    KEYINPUT_R,
+    KEYINPUT_L
+} KEYINPUT_CODE;
+
 typedef enum {
     EVENT_PPU
 } GBAEventType;
@@ -243,10 +257,6 @@ void busWrite(GBA* gba, uint32_t address, uint32_t data, uint8_t size);
 
 /* --------------- */
 
-void startGBAEmulator(GBA* gba);
-void initialiseGBA(GBA* gba, GamePak* gamepak, uint8_t* biosROM, size_t biosSize, void (*frameEndCallback)(GBA* gba, void*), void* context);
-void freeGBA(GBA* gba);
-
 /* DMA */
 void startDMA(GBA* gba, uint8_t N);
 
@@ -255,4 +265,18 @@ void pushEvent(GBA* gba, GBAEvent event);
 GBAEvent peekEvent(GBA* gba, uint8_t index);
 GBAEvent popEvent(GBA* gba);
 
+/* ------- API ------- */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+void startGBAEmulator(GBA* gba);
+void initialiseGBA(GBA* gba, GamePak* gamepak, uint8_t* biosROM, size_t biosSize, void (*frameEndCallback)(GBA* gba, void*), void* context);
+void freeGBA(GBA* gba);
+void keyinputSet(GBA* gba, KEYINPUT_CODE code);
+void keyinputReset(GBA* gba, KEYINPUT_CODE code);
+
+#ifdef __cplusplus
+}
+#endif
 #endif

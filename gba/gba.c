@@ -144,6 +144,14 @@ void startGBAEmulator(GBA* gba) {
 	}
 }
 
+void keyinputSet(GBA* gba, KEYINPUT_CODE code) {
+    writeIO_internal(gba, KEYINPUT, readIO_internal(gba, KEYINPUT, WIDTH_16) | (1 << code), WIDTH_16);
+}
+
+void keyinputReset(GBA* gba, KEYINPUT_CODE code) {
+    writeIO_internal(gba, KEYINPUT, readIO_internal(gba, KEYINPUT, WIDTH_16) & ~(1 << code), WIDTH_16);
+}
+
 /* -------- Bus Functions --------- */
 
 static inline uint32_t littleEndian32Decode(uint8_t* ptr) {

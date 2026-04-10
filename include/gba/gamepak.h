@@ -13,7 +13,14 @@ typedef struct {
 	bool inserted;
 } GamePak;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 bool initGamePak(GamePak* gamepak, uint8_t* allocated, size_t size);
-void freeGamePak(GamePak* gamepak);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

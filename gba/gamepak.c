@@ -9,10 +9,3 @@ bool initGamePak(GamePak* gamepak, uint8_t* allocated, size_t size) {
 	gamepak->size = (size_t)size;
 	return true;
 }
-
-void freeGamePak(GamePak* gamepak) {
-	free(gamepak->allocated);
-	gamepak->inserted = false;
-	gamepak->size = 0;
-	gamepak->allocated = NULL;
-}
