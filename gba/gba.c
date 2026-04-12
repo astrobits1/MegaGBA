@@ -33,17 +33,10 @@ static void initialiseIO(GBA* gba) {
 
 /* ----------------------------------------------------- */
 
-void initialiseGBA(GBA* gba, GamePak* gamepak, uint8_t* biosBuffer, size_t biosSize, void (*frameEndCallback)(GBA* gba, void* context), void* context) {
-
-    if (frameEndCallback == NULL) {
-        printf("[FATAL] frameEndCallback() is NULL\n");
-        exit(88);
-    }
+void initialiseGBA(GBA* gba, GamePak* gamepak, uint8_t* biosBuffer, size_t biosSize) {
 
 	gba->gamepak = gamepak;
-    gba->frameEndCallback = frameEndCallback;
-    gba->context = context;
-	gba->run = false;
+	gba->runningStepFrame = false;
     gba->cycles = 0;
 
     /* Initialise all DMA related arrays of internal registers to 0 for DMA0-3 */
@@ -116,15 +109,13 @@ void freeGBA(GBA* gba) {
 	gba->VRAM = NULL;
 	gba->OAM = NULL;
 
-    gba->frameEndCallback = NULL;
-    gba->context = NULL;
+    gba->runningStepFrame = false;
 }
 
-void startGBAEmulator(GBA* gba) {
-	gba->run = true;
-	/* For now, we take each instruction as 1 cycle consumed */
+void stepGBAFrame(GBA* gba) {
+	gba->runningStepFrame = true;
 
-	while (gba->run) {
+	while (gba->runningStepFrame) {
         if (gba->dmaInProgressMaster) {
             uint8_t N = 0;
             for (int i=0; i<4; i++) {

@@ -1,7 +1,6 @@
 #include <gba/gba.h>
 #include <gba/renderer.h>
 #include <string.h>
-#include <stdio.h>
 
 #define TILE_DATA_BASE_TEXT     0x10000
 #define TILE_DATA_BASE_BITMAP   0x14000
@@ -2100,8 +2099,9 @@ void stepPPU(GBA* gba) {
                         }
                     }
 
-                    /* FrameEndCallback call and pass context */
-                    gba->frameEndCallback(gba, gba->context); 
+                    /* Execution for stepFrame can stop in case it was scheduled
+                     * We run from one VDRAW end to other */
+                    gba->runningStepFrame = false;
 				} else {
 					/* Latch DISPCNT if not entering VBLANK */
 					latchDISPCNT(gba);

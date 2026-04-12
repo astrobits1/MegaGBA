@@ -2,7 +2,7 @@
 #define gba_include_h
 
 #include <stdint.h>
-#include <stddef.h> 
+#include <stdlib.h> 
 #include <gba/arm7tdmi.h>
 #include <gba/renderer.h>
 #include <gba/gamepak.h>
@@ -205,11 +205,10 @@ struct GBA {
 	uint8_t ppuHState; 					// Current Horizontal State of PPU
 
 	/* ----------------- Emulator ---------------- */
-    void (*frameEndCallback)(struct GBA* gba, void* context);
-    void* context;
 	GamePak* gamepak; 					/* Cartridge containing allocated code and important info
 										   about the game */
-	bool run; 							/* Flag used to stop the emulator and check if its running */
+	bool runningStepFrame; 			    /* Flag used to keep track of when its running the frame
+                                           and when to stop when calling stepGBAFrame */
     uint64_t cycles;                    /* Cycle counter */
 
 	/* Allocations */
@@ -270,8 +269,9 @@ GBAEvent popEvent(GBA* gba);
 extern "C" {
 #endif
 
-void startGBAEmulator(GBA* gba);
-void initialiseGBA(GBA* gba, GamePak* gamepak, uint8_t* biosROM, size_t biosSize, void (*frameEndCallback)(GBA* gba, void*), void* context);
+void stepGBAFrame(GBA* gba);
+
+void initialiseGBA(GBA* gba, GamePak* gamepak, uint8_t* biosROM, size_t biosSize);
 void freeGBA(GBA* gba);
 void keyinputSet(GBA* gba, KEYINPUT_CODE code);
 void keyinputReset(GBA* gba, KEYINPUT_CODE code);

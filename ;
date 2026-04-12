@@ -8,7 +8,6 @@
 
 #include <iostream>
 #include <vector>
-#include <algorithm>
 
 
 
@@ -33,38 +32,13 @@ static bool initialiseSDL(SDL_Window*& window, SDL_Renderer*& renderer) {
     return true;
 }
 
-static void ImGuiEvents(Context* ctx, SDL_Event* event) {
-    if (event->type == SDL_WINDOWEVENT) {
-        if (event->window.event == SDL_WINDOWEVENT_CLOSE) {
-            if (event->window.windowID == SDL_GetWindowID(ctx->mainWin.window)) {
-                /* If main window is closed, close whole program */
-                ctx->quit = true;
-            } else {
-                /* Scan through all child and descendent windows of context and trigger close
-                 * window for it if window ID matches */
-                for (int i=0; i<ctx->windows.size(); i++) {
-                    Window* win = ctx->windows.at(i);
-                    if (event->window.windowID == SDL_GetWindowID(win->window)) {
-                        win->hide();
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-
-    /* Events are processed for the current ImGui context aka window only */
-    ImGui_ImplSDL2_ProcessEvent(event);
-}
-
 static void SDLEvents(Context* ctx) {
     GBA* gba = ctx->gba;
     /* We listen for events like keystrokes and window closing */
     SDL_Event event;
 
     while (SDL_PollEvent(&event)) {
-        ImGuiEvents(ctx, &event);
+        ImGui_ImplSDL2_ProcessEvent(&event);
 
         if (event.type == SDL_QUIT) {
             ctx->quit = true;
@@ -115,88 +89,40 @@ static void cleanSDL(SDL_Window* win, SDL_Renderer* rend) {
 
 /* ---------------- Window ---------------------------- */
 
-Window::Window(Context* ctx) {
-    this->context = ctx;
-}
-
-void Window::initialise() {
-    ImGuiContext* prevContext = ImGui::GetCurrentContext();
-
+Window::Window() {
     /* Initialise SDL window and renderer */
     bool doneInit = initialiseSDL(this->window, this->renderer);
     if (!doneInit) throw;
 
-    /* Add SDL window to context SDL windows list */
-    this->context->windows.push_back(this);
-
     /* Initialise ImGUI context for window */
-    ImGuiContext* imguiCtx = ImGui::CreateContext();
+    ImGuiContext* ctx = ImGui::CreateContext();
     /* Created context auto set to current context */
-    this->imguiCtx = imguiCtx;
-    ImGui::SetCurrentContext(imguiCtx);
+    this->imguiCtx = ctx;
 
 	ImGui_ImplSDLRenderer2_Init(this->renderer);
     ImGui_ImplSDL2_InitForSDLRenderer(this->window, this->renderer);
-
-    this->initialised = true;
-    this->showing = true;
-
-    if (prevContext != NULL) ImGui::SetCurrentContext(prevContext);
-}
-
-void Window::hide() {
-    if (!this->initialised) return;
-
-    this->showing = false;
-    SDL_HideWindow(this->window);
-}
-
-void Window::show() {
-    if (!this->initialised) return;
-
-    this->showing = true;
-    SDL_ShowWindow(this->window);
 }
 
 Window::~Window() {
-    if (this->initialised) {
-        ImGuiContext* prevContext = ImGui::GetCurrentContext();
+    /* Destroy main window ImGUI context and then SDL components */
+    ImGui_ImplSDLRenderer2_Shutdown();
+	ImGui_ImplSDL2_Shutdown();
 
-        /* Destroy main window ImGUI context and then SDL components */
-        ImGui::SetCurrentContext(this->imguiCtx);
-        ImGui_ImplSDLRenderer2_Shutdown();
-        ImGui_ImplSDL2_Shutdown();
+    ImGui::SetCurrentContext(this->imguiCtx);
+	ImGui::DestroyContext();
 
-        ImGui::SetCurrentContext(this->imguiCtx);
-        ImGui::DestroyContext();
-
-        /* Manage SDL Window list for context */
-        std::vector<Window*>* vec = &this->context->windows;
-        vec->erase(std::remove(vec->begin(), vec->end(), (Window*)this), vec->end());
-
-        cleanSDL(this->window, this->renderer);
-
-        if (this->imguiCtx != prevContext) {
-            ImGui::SetCurrentContext(prevContext);
-        }
-    }
+    cleanSDL(this->window, this->renderer);
 }
 
-/* ------------------- Main Window -------------------- */
-
-
 /* ---------------- Context --------------------------- */
-Context::Context() : mainWin(this) {
+Context::Context() {
     this->quit = false;
     this->gba = NULL;
-
-    this->mainWin.initialise();
 
     /* Initialise texture for main window */
     SDL_Texture* text = SDL_CreateTexture(this->mainWin.renderer, SDL_PIXELFORMAT_BGR555, SDL_TEXTUREACCESS_STREAMING, 240, 160);
     if (text == NULL) throw;
     this->texture = text;
-
 }
 
 Context::~Context() {
@@ -233,6 +159,15 @@ void Context::unloadROM() {
     this->gba = NULL;
 }
 
+/* ------------------- Main Window -------------------- */
+
+void MainWindow::showDebugger() {
+}
+
+void MainWindow::hideDebugger() {
+
+}
+
 /* ----------------- GUI Rendering -------------------- */
 
 
@@ -260,11 +195,9 @@ static void renderMainGUI(Context* ctx) {
 
         if (ImGui::BeginMenu("Tools")) {
             ImGui::SetWindowFontScale(1.8);
-			if (ImGui::MenuItem("Disassembler", NULL, &ctx->mainWin.debugWin.showing)) {
-                if (!ctx->mainWin.debugWin.initialised) ctx->mainWin.debugWin.initialise();
-
-                if (ctx->mainWin.debugWin.showing) ctx->mainWin.debugWin.show();
-                else ctx->mainWin.debugWin.hide();
+			if (ImGui::MenuItem("Disassembler", NULL, &ctx->mainWin.showingDebugger)) {
+                if (ctx->mainWin.showingDebugger) ctx->mainWin.showDebugger();
+                else ctx->mainWin.hideDebugger();
             }
 			ImGui::EndMenu();
 		}

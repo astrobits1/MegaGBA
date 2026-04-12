@@ -19,12 +19,12 @@ BIN_IMGUI = imgui.o imgui_tables.o imgui_draw.o imgui_widgets.o imgui_impl_sdlre
 
 exe: $(EXE)
 
-$(EXE): libmegagba.a main.o front_imgui.o
-	$(CPPC) main.o front_imgui.o -O3 -L. -lmegagba `sdl2-config --libs` -o $(EXE)
+$(EXE): libmegagba.a libimgui.a front_imgui.o main.o
+	$(CPPC) main.o front_imgui.o -O3 -L. -lmegagba -limgui `sdl2-config --libs` -o $(EXE)
 
 front_imgui.o : $(INCLUDE_FRONTEND)/front_imgui.hpp \
 				$(SRC_FRONTEND)/front_imgui.cpp
-	$(CPPC) -c $(SRC_FRONTEND)/front_imgui.cpp -I$(INCLUDE) -O3 `sdl2-config --cflags`
+	$(CPPC) -c $(SRC_FRONTEND)/front_imgui.cpp -I$(INCLUDE) -Iimgui -O3 `sdl2-config --cflags`
 
 main.o : main.cpp
 	$(CPPC) -c main.cpp -I$(INCLUDE) -O3 
@@ -56,6 +56,10 @@ debugGBA.o : $(INCLUDE_CORE)/debugGBA.h \
 	$(CC) -c $(SRC_CORE)/debugGBA.c $(CORE_CFLAGS)
 
 # --------------------------------------------------------------------
+imgui: libimgui.a
+
+libimgui.a: $(BIN_IMGUI)
+	ar rcs libimgui.a $(BIN_IMGUI)
 imgui.o: imgui/imgui.cpp
 	$(CPPC) -c imgui/imgui.cpp $(CFLAGS) -Iimgui
 imgui_draw.o: imgui/imgui_draw.cpp
