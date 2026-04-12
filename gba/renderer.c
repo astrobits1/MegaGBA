@@ -112,7 +112,7 @@ static Layer compositorNewLayer(LAYER_TYPE type) {
     layer.type = type;
    
     /* Initialise buffer to transparent */
-    repeatLoadFramebuffer((uint16_t)(1 << 15), layer.linebuffer, 240);
+    repeatLoadFramebuffer((uint16_t)(1 << 15), layer.linebuffer, WIDTH_PX);
 
     return layer;
 }
@@ -136,7 +136,7 @@ static void compositorPushBackLayer(Compositor* comp, Layer layer) {
 
 static void compositorPushBackBackdrop(Compositor* comp, uint16_t rgb) {
     Layer backdrop = compositorNewLayer(LAYER_BACKDROP);
-    repeatLoadFramebuffer(rgb, backdrop.linebuffer, 240);
+    repeatLoadFramebuffer(rgb, backdrop.linebuffer, WIDTH_PX);
 
     compositorPushBackLayer(comp, backdrop);
 }
@@ -235,7 +235,7 @@ static void compositorMerge(Compositor* comp, uint16_t linebuffer[], bool sfxEna
     }
     printf("\n");
     */
-    for (int i=0; i<240; i++) {
+    for (int i=0; i<WIDTH_PX; i++) {
         uint8_t topLayerIndex = -1;
         Layer topLayer;
         uint16_t topPixel;
@@ -343,7 +343,7 @@ static void computeAndOverlayWindow(GBA* gba, uint8_t layersEnabled, uint16_t WH
     uint8_t spritesEnabled = layersEnabled >> 4 & 1;
     uint8_t sfxEnabled = layersEnabled >> 5 & 1;
 
-    uint16_t windowlinebuffer[240];
+    uint16_t windowlinebuffer[WIDTH_PX];
     stackLayers(gba, bgEnabled, exclude, spritesEnabled, sfxEnabled, mode, windowlinebuffer);
 
     for (int x=X1; x<=X2; x++) {
@@ -361,7 +361,7 @@ static void computeAndOverlayWindowBitmap(GBA* gba, uint8_t layersEnabled, uint1
     uint8_t spritesEnabled = layersEnabled >> 4 & 1;
     uint8_t sfxEnabled = layersEnabled >> 5 & 1;
 
-    uint16_t windowlinebuffer[240];
+    uint16_t windowlinebuffer[WIDTH_PX];
     stackLayersBitmap(gba, bgEnabled, spritesEnabled, sfxEnabled, windowlinebuffer, mapDataBase, noTilesPerRow, noTilesPerCol, getBGAffinePalette);
 
     for (int x=X1; x<=X2; x++) {
@@ -371,8 +371,8 @@ static void computeAndOverlayWindowBitmap(GBA* gba, uint8_t layersEnabled, uint1
 
 static void computeAndOverlayObjWindow(GBA* gba, uint16_t WOUT, uint16_t linebuffer[], uint8_t exclude, uint8_t mode) {
     /* Should be called when OBJ Window is enabled */
-    uint16_t objWindowMask[240];
-    repeatLoadFramebuffer(1 << 15, objWindowMask, 240); 
+    uint16_t objWindowMask[WIDTH_PX];
+    repeatLoadFramebuffer(1 << 15, objWindowMask, WIDTH_PX); 
   
     /* Compute all layers for obj win because affine background still requires normal
      * line wise computation and internal counter is incremented. Discard the result 
@@ -386,12 +386,12 @@ static void computeAndOverlayObjWindow(GBA* gba, uint16_t WOUT, uint16_t linebuf
         uint8_t objWinSpritesEnabled = layersEnabled >> 4 & 1;
         uint8_t objWinSFXEnabled = layersEnabled >> 5 & 1;
 
-        uint16_t objWindowLinebuffer[240];
+        uint16_t objWindowLinebuffer[WIDTH_PX];
 
         stackLayers(gba, objWinBGEnabled, exclude, objWinSpritesEnabled, objWinSFXEnabled, mode, objWindowLinebuffer);
 
         /* Mask obj window data */
-        for (int i=0; i<240; i++) {
+        for (int i=0; i<WIDTH_PX; i++) {
             uint16_t maskRGB = objWindowMask[i];
             if (!(maskRGB >> 15 & 1)) {
                 /* Not transparent */
@@ -404,8 +404,8 @@ static void computeAndOverlayObjWindow(GBA* gba, uint16_t WOUT, uint16_t linebuf
 }
 
 static void computeAndOverlayObjWindowBitmap(GBA* gba, uint16_t WOUT, uint16_t linebuffer[], uint32_t mapDataBase, uint16_t noTilesPerRow, uint16_t noTilesPerCol, uint16_t (*getBGAffinePalette)(GBA*, uint32_t, uint32_t, int32_t, int32_t, uint16_t)) {
-    uint16_t objWindowMask[240];
-    repeatLoadFramebuffer(1 << 15, objWindowMask, 240);
+    uint16_t objWindowMask[WIDTH_PX];
+    repeatLoadFramebuffer(1 << 15, objWindowMask, WIDTH_PX);
 
     uint8_t layersEnabled = WOUT >> 8 & 0x3F;
     uint8_t objWinBGEnabled = layersEnabled >> 3 & 1; 
@@ -415,11 +415,11 @@ static void computeAndOverlayObjWindowBitmap(GBA* gba, uint16_t WOUT, uint16_t l
     if (foundObjWindowSprite) {
         uint8_t objWinSpritesEnabled = layersEnabled >> 4 & 1;
         uint8_t objWinSFXEnabled = layersEnabled >> 5 & 1;
-        uint16_t objWindowLinebuffer[240];
+        uint16_t objWindowLinebuffer[WIDTH_PX];
         stackLayersBitmap(gba, objWinBGEnabled, objWinSpritesEnabled, objWinSFXEnabled, objWindowLinebuffer, mapDataBase, noTilesPerRow, noTilesPerCol, getBGAffinePalette);
 
         /* Mask obj window data */
-        for (int i=0; i<240; i++) {
+        for (int i=0; i<WIDTH_PX; i++) {
             uint16_t maskRGB = objWindowMask[i];
             if (!(maskRGB >> 15 & 1)) {
                 /* Not transparent */
@@ -481,7 +481,7 @@ static bool checkSpriteVisibility(GBA* gba, uint8_t height, uint8_t width, uint1
     bool inVerticalBounds = false;
     bool inHorizontalBounds = false;
 
-    if (y_obj >= 160) {
+    if (y_obj >= HEIGHT_PX) {
         /* Y out of screen */
         if (height*8 > 256-y_obj) {
             /* Wrapover to top scanline */
@@ -501,7 +501,7 @@ static bool checkSpriteVisibility(GBA* gba, uint8_t height, uint8_t width, uint1
     }
 
     //printf("y rendering: %d\n", y_rendering);
-    if (x_obj >= 240) {
+    if (x_obj >= WIDTH_PX) {
         /* X out of screen */
         if (width*8 > 512-x_obj) {
             /* Wraps to start of scanline */
@@ -589,7 +589,7 @@ static void computeSpriteNormalScanline(GBA* gba, uint16_t linebuffer[], uint16_
     uint8_t latchedMosaicPaletteIndex = 0;
     uint16_t latchedMosaicPalette = 0;
 
-    if (x_obj >= 240) {
+    if (x_obj >= WIDTH_PX) {
         /* Some wrap around is happening as we are still in horizontal bounds */
         uint16_t noPixelsToSkip = 512-x_obj;
         startTile = (noPixelsToSkip & ~0b111)/8;
@@ -634,7 +634,7 @@ static void computeSpriteNormalScanline(GBA* gba, uint16_t linebuffer[], uint16_
 
         for (int xInternal = tile==startTile ? startPixel:0; xInternal<8; xInternal++) {
             uint8_t xInternalSprite = tile*8+xInternal;
-            uint8_t xReal = (x_obj>=240?0:x_obj)+(tile-startTile)*8+xInternal-startPixel;
+            uint8_t xReal = (x_obj>=WIDTH_PX?0:x_obj)+(tile-startTile)*8+xInternal-startPixel;
             uint8_t paletteIndex;
             uint16_t rgb;
 
@@ -783,7 +783,7 @@ static void computeSpriteRotScalScanline(GBA* gba, uint16_t linebuffer[], uint16
     }
 
      /* now copy visible parts to main buffer */
-    if (x_obj >= 240) {
+    if (x_obj >= WIDTH_PX) {
         uint16_t noPixelsToSkip = 512-x_obj;
 
         for (uint16_t i=0; i<width*8-noPixelsToSkip; i++) {
@@ -802,9 +802,9 @@ static void computeSpriteRotScalScanline(GBA* gba, uint16_t linebuffer[], uint16
     } else {
         uint16_t noPixelsToCopy = width*8;
 
-        if (x_obj + width*8 > 240) {
+        if (x_obj + width*8 > WIDTH_PX) {
             /* Cutoff near the end */
-            noPixelsToCopy -= x_obj + width*8 - 240;
+            noPixelsToCopy -= x_obj + width*8 - WIDTH_PX;
         }
 
         for (uint16_t i=0; i<noPixelsToCopy; i++) {
@@ -858,7 +858,7 @@ static bool computeObjWindowScanline(GBA* gba, uint16_t linebuffer[], uint32_t t
         uint8_t size = attr1 >> 14 & 0b11;
 
         uint8_t height, width, y_objInternal;
-        uint16_t semiTransparentLayerMask[240];             /* Discarded */
+        uint16_t semiTransparentLayerMask[WIDTH_PX];             /* Discarded */
         getSpriteDimensions(size, shape, &width, &height);  
 
         if (rotationAndScaling) {
@@ -909,9 +909,9 @@ static bool computeSpriteScanline(GBA* gba, uint16_t linebuffer[], uint16_t semi
 
     for (int p=minPriority; p>=maxPriority; p--) {
         //printf("BG Priority: %d\n", p);
-        uint16_t currentlinebuffer[240];
+        uint16_t currentlinebuffer[WIDTH_PX];
         /* Set all palettes to transparent by default */
-        repeatLoadFramebuffer(1<<15, currentlinebuffer, 240);
+        repeatLoadFramebuffer(1<<15, currentlinebuffer, WIDTH_PX);
         
         for (int i=127; i>=0; i--) {
             //printf("OAM index: %d\n", i);
@@ -966,7 +966,7 @@ static bool computeSpriteScanline(GBA* gba, uint16_t linebuffer[], uint16_t semi
         }
 
         /* Overlay current layer with the previous composed */
-        for (int x=0; x<240; x++) {
+        for (int x=0; x<WIDTH_PX; x++) {
             /* If bit 15 is set, pixel is transparent */
             if (!(currentlinebuffer[x] >> 15 & 1)) {
                 /* If not transparent then overlay */
@@ -977,7 +977,7 @@ static bool computeSpriteScanline(GBA* gba, uint16_t linebuffer[], uint16_t semi
 
     /* 'Hollow' out main linebuffer in places where semi transparent layer separates out */
     *foundSemiTransparent = false;
-    for (int i=0; i<240; i++) {
+    for (int i=0; i<WIDTH_PX; i++) {
         uint16_t semi = semiTransparentLayerMask[i];
 
         if (!(semi >> 15 & 1)) {
@@ -1024,7 +1024,7 @@ static uint16_t getBGAffinePalette_M3(GBA* gba, uint32_t _, uint32_t __, int32_t
 
 static uint16_t getBGAffinePalette_M4(GBA* gba, uint32_t mapDataBase, uint32_t _, int32_t x_i, int32_t y_i, uint16_t noTilesPerRow) {
 
-	uint8_t index = gba->VRAM[mapDataBase + 240*y_i + x_i];
+	uint8_t index = gba->VRAM[mapDataBase + WIDTH_PX*y_i + x_i];
     uint16_t rgb = readBGPaletteRAM(gba, index);
 
     rgb &= ~(1<<15);
@@ -1045,7 +1045,7 @@ static bool computeBGRotScalScanline(GBA* gba, uint8_t N, uint16_t linebuffer[],
     /* Retrieve and return from cache if its available */
     if (gba->bgLayerLinebufferCacheUsed[N]) {
         bool transparentPixelExists = false;
-        for (int i=0; i<240; i++) {
+        for (int i=0; i<WIDTH_PX; i++) {
             uint16_t v = gba->bgLayerLinebufferCache[N][i];
             if (v >> 15 & 1) transparentPixelExists = true;
             linebuffer[i] = v;
@@ -1143,7 +1143,7 @@ static bool computeBGRotScalScanline(GBA* gba, uint8_t N, uint16_t linebuffer[],
     /* Apply horizontal mosaic as an after effect to the final scanline */
     if (mosaicEnabled) { 
         if (MOSH > 0) {
-            for (int i=0; i<240; i++) {
+            for (int i=0; i<WIDTH_PX; i++) {
                 uint8_t mosaicIndex = (MOSH+1)*(i/(MOSH+1));
                 uint16_t col = linebuffer[mosaicIndex];
 
@@ -1198,7 +1198,7 @@ static bool computeBGTextScanline(GBA* gba, uint8_t N, uint16_t linebuffer[]) {
 
     if (gba->bgLayerLinebufferCacheUsed[N]) {
         bool transparentPixelExists = false;
-        for (int i=0; i<240; i++) {
+        for (int i=0; i<WIDTH_PX; i++) {
             uint16_t v = gba->bgLayerLinebufferCache[N][i];
             if (v >> 15 & 1) transparentPixelExists = true;
             linebuffer[i] = v;
@@ -1358,7 +1358,7 @@ static bool computeBGTextScanline(GBA* gba, uint8_t N, uint16_t linebuffer[]) {
                 }
                 /* When rendering is being done in reverse for flipped last tile
                  * skip xReal >= 240 */
-            } else if (xReal >= 240) {
+            } else if (xReal >= WIDTH_PX) {
                 continue;
             }
 
@@ -1410,7 +1410,7 @@ static bool computeBGTextScanline(GBA* gba, uint8_t N, uint16_t linebuffer[]) {
         uint8_t MOSH = MOS & 0xF;
 
         if (MOSH > 0) {
-            for (int i=0; i<240; i++) {
+            for (int i=0; i<WIDTH_PX; i++) {
                 uint8_t mosaicIndex = (MOSH+1)*(i/(MOSH+1));
                 uint16_t col = linebuffer[mosaicIndex];
 
@@ -1479,7 +1479,7 @@ static void computeAndDiscardBGRotScalLayers_Text(GBA* gba, uint8_t enabled, uin
     uint8_t masterBGEnabled = gba->latchedDISPCNT >> 8 & 0xF;
     enabled &= masterBGEnabled;
 
-    uint16_t temp[240];
+    uint16_t temp[WIDTH_PX];
 
     for (int i=0; i<4; i++) {
         if (enabled>>i&1 && !(exclude>>i&1) && ((mode>>i&1)==0)) {
@@ -1494,7 +1494,7 @@ static void computeAndDiscardBGRotScalLayer_Bitmap(GBA* gba, uint16_t noTilesPer
     bool masterBGEnabled = gba->latchedDISPCNT >> 10 & 1;
     if (!masterBGEnabled) return;
 
-    uint16_t temp[240];
+    uint16_t temp[WIDTH_PX];
 
     computeBGRotScalScanline(gba, 2, temp, mapDataBase, 0, noTilesPerRow, noTilesPerCol, 0, getBGAffinePalette);
 }
@@ -1755,13 +1755,13 @@ static void stackWindowsBitmap(GBA* gba, uint16_t linebuffer[], uint32_t mapData
 static void renderTransparentScanline(GBA* gba) {
     /* Load a transparent scanline at current y in framebuffer */
     uint16_t* start = &gba->framebuffer[gba->IO[VCOUNT]*WIDTH_PX];
-    repeatLoadFramebuffer((uint16_t)(1 << 15), start, 240);
+    repeatLoadFramebuffer((uint16_t)(1 << 15), start, WIDTH_PX);
 }
 
 static void renderLinebuffer(GBA* gba, uint16_t linebuffer[]) {
     /* Proceed to rendering the final composite BG linebuffer */
 
-    for (int x=0; x<240; x++) {
+    for (int x=0; x<WIDTH_PX; x++) {
         uint16_t rgb = linebuffer[x];
 
         gba->framebuffer[gba->IO[VCOUNT]*WIDTH_PX+x] = rgb;
@@ -1776,7 +1776,7 @@ static void renderBGMode0Scanline(GBA* gba) {
   
     uint8_t exclude = 0b0000;            /* BG0-3 are supported in mode 0 */
     uint8_t mode = 0b1111;              /* 1=Text mode, 0=Rot/Scaling mode */
-    uint16_t linebuffer[240];
+    uint16_t linebuffer[WIDTH_PX];
     
 
     uint8_t windowEnabled = gba->latchedDISPCNT >> 13 & 0b111;
@@ -1802,7 +1802,7 @@ static void renderBGMode1Scanline(GBA* gba) {
     bool spritesEnabled = gba->latchedDISPCNT >> 12 & 1;
     uint8_t exclude = 0b1000;
     uint8_t mode = 0b0011;
-    uint16_t linebuffer[240];
+    uint16_t linebuffer[WIDTH_PX];
 
     uint8_t windowEnabled = gba->latchedDISPCNT >> 13 & 0b111;
     if (windowEnabled > 0) {
@@ -1827,7 +1827,7 @@ static void renderBGMode2Scanline(GBA* gba) {
     bool spritesEnabled = gba->latchedDISPCNT >> 12 & 1;
     uint8_t exclude = 0b0011;
     uint8_t mode = 0b0000;
-    uint16_t linebuffer[240];
+    uint16_t linebuffer[WIDTH_PX];
 
     uint8_t windowEnabled = gba->latchedDISPCNT >> 13 & 0b111;
     if (windowEnabled > 0) {
@@ -1860,7 +1860,7 @@ static void renderBGMode3Scanline(GBA* gba) {
 
     /* BG2 should be enabled */
     
-    uint16_t linebuffer[240];
+    uint16_t linebuffer[WIDTH_PX];
 
     uint8_t windowEnabled = gba->latchedDISPCNT >> 13 & 0b111;
     if (windowEnabled > 0) {
@@ -1888,7 +1888,7 @@ static void renderBGMode4Scanline(GBA* gba) {
 
     /* BG2 should be enabled */
  
-    uint16_t linebuffer[240];
+    uint16_t linebuffer[WIDTH_PX];
 	uint32_t base = (gba->latchedDISPCNT >> 4 & 1) ? 0xA000 : 0x0000;
 
     uint8_t windowEnabled = gba->latchedDISPCNT >> 13 & 0b111;
@@ -1912,7 +1912,7 @@ static void renderBGMode5Scanline(GBA* gba) {
 
     /* BG2 should be enabled */
 
-    uint16_t linebuffer[240];
+    uint16_t linebuffer[WIDTH_PX];
 	uint32_t base = (gba->latchedDISPCNT >> 4 & 1) ? 0xA000 : 0x0000;
 
     uint8_t windowEnabled = gba->latchedDISPCNT >> 13 & 0b111;
@@ -2081,7 +2081,7 @@ void stepPPU(GBA* gba) {
                     if (STAT >> 5 & 1) requestInterrupt(gba, IRQ_LCD_VCOUNTER);
 				} else writeIO_internal(gba, DISPSTAT, STAT & ~0b100, WIDTH_16);
 
-				if (gba->IO[VCOUNT] == 160) {
+				if (gba->IO[VCOUNT] == HEIGHT_PX) {
 					/* Enter VBLANK and render frame */
 					gba->ppuVState = PPU_VBLANK;
 					/* Set VBLANK STAT flag */

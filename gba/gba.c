@@ -123,7 +123,7 @@ void stepGBAFrame(GBA* gba) {
                     break;
                 }
             }
-
+ 
             stepDMA(gba, N);
         } else {
 			stepCPU(gba);
@@ -235,26 +235,36 @@ uint32_t busRead(GBA* gba, uint32_t address, uint8_t size) {
 
 		ptr = &gba->gamepak.allocated[relativeAddress];
 		
-	} else if (address >= INT_WRAM_32KB && address <= INT_WRAM_32KB_END) {
+	} else if (address >= INT_WRAM_32KB && address <= INT_WRAM_32KB_MIRROR_END) {
 		/* Read from internal work RAM */
-		ptr = &gba->IWRAM[address - INT_WRAM_32KB];
-    } else if (address >= 0x03FFFF00 && address <= 0x03FFFFFF) {
-        /* Mirror of IWRAM 0x03007F00 - 0x03007FFF */
-        ptr = &gba->IWRAM[(address & 0xFF)|(0x7F<<8)];
-	} else if (address >= EXT_WRAM_256KB && address <= EXT_WRAM_256KB_END) {
+        address -= INT_WRAM_32KB;
+        address &= 0x00007FFF;
+		ptr = &gba->IWRAM[address];
+	} else if (address >= EXT_WRAM_256KB && address <= EXT_WRAM_256KB_MIRROR_END) {
 		/* Read from external work RAM - waitstates apply */
-		ptr = &gba->EWRAM[address - EXT_WRAM_256KB];
-	} else if (address >= VRAM_96KB && address <= VRAM_96KB_END) {
+        address -= EXT_WRAM_256KB;
+        address &= 0x0003FFFF;
+		ptr = &gba->EWRAM[address];
+	} else if (address >= VRAM_96KB && address <= VRAM_96KB_MIRROR_END) {
 		/* Read from Video RAM */
-		ptr = &gba->VRAM[address - VRAM_96KB];
+        address -= VRAM_96KB;
+        address &= 0x0001FFFF;
+        
+        /* 128 KB is mirrored, the top 32 KB are mirror of the 32 KB region under it */
+        if (address > 0x18000) address -= 0x8000;
+		ptr = &gba->VRAM[address];
 	} else if (address >= IO_REG_1KB && address <= IO_REG_1KB_END) {
 		/* Read from IO register */
 		return readIO(gba, address-IO_REG_1KB, size);
-	} else if (address >= PALETTE_RAM_1KB && address <= PALETTE_RAM_1KB_END) {
+	} else if (address >= PALETTE_RAM_1KB && address <= PALETTE_RAM_1KB_MIRROR_END) {
 		/* Read from Palette RAM */
-		ptr = &gba->PaletteRAM[address - PALETTE_RAM_1KB];	
-	} else if (address >= OAM_1KB && address <= OAM_1KB_END) {
-        ptr = &gba->OAM[address - OAM_1KB];
+        address -= PALETTE_RAM_1KB;
+        address &= 0x000003FF;
+		ptr = &gba->PaletteRAM[address];	
+	} else if (address >= OAM_1KB && address <= OAM_1KB_MIRROR_END) {
+        address -= OAM_1KB;
+        address &= 0x000003FF;
+        ptr = &gba->OAM[address];
     }
 
     if (ptr == NULL) return 0;
@@ -286,49 +296,60 @@ void busWrite(GBA* gba, uint32_t address, uint32_t data, uint8_t size) {
     /* Write cycle */
     gba->cycles++;
 
-	if (address >= INT_WRAM_32KB && address <= INT_WRAM_32KB_END) {
+	if (address >= INT_WRAM_32KB && address <= INT_WRAM_32KB_MIRROR_END) {
 		/* Write to internal workram with current size and little endian formatting */
-		ptr = &gba->IWRAM[address - INT_WRAM_32KB];
-    } else if (address >= 0x03FFFF00 && address <= 0x03FFFFFF) {
-        /* Mirror of IWRAM 0x03007F00 - 0x03007FFF */
-        ptr = &gba->IWRAM[(address & 0xFF)|(0x7F<<8)];
-	} else if (address >= EXT_WRAM_256KB && address <= EXT_WRAM_256KB_END) {
-		ptr = &gba->EWRAM[address - EXT_WRAM_256KB];
-	} else if (address >= VRAM_96KB && address <= VRAM_96KB_END) {
-		ptr = &gba->VRAM[address - VRAM_96KB];
+        address -= INT_WRAM_32KB;
+        address &= 0x00007FFF;
+		ptr = &gba->IWRAM[address];
+	} else if (address >= EXT_WRAM_256KB && address <= EXT_WRAM_256KB_MIRROR_END) {
+        address -= EXT_WRAM_256KB;
+        address &= 0x0003FFFF;
+		ptr = &gba->EWRAM[address];
+	} else if (address >= VRAM_96KB && address <= VRAM_96KB_MIRROR_END) {
+        address -= VRAM_96KB;
+        address &= 0x0001FFFF;
+        
+        /* 128 KB is mirrored, the top 32 KB are mirror of the 32 KB region under it */
+        if (address > 0x18000) address -= 0x8000;
+		ptr = &gba->VRAM[address];
 
 		/* VRAM only supports 16 and 32 bit writes, writing a byte to the addressed
-		 * halfword is going to mirror it to both upper and lower byte */
+		 * halfword is going to mirror it to both upper and lower byte OR do nothing */
 		if (size == WIDTH_8) {
-			/* Halfword aligned */
-			ptr = &gba->VRAM[(address & ~1) - VRAM_96KB];
+            uint8_t mode = gba->IO[DISPCNT] & 0b111;
+            /* OBJ space write is ignored*/
+            if ((mode > 2 && address >= 0x14000) || (mode <= 2 && address >= 0x10000)) return;
+
+			/* Or else halfword aligned BG write with mirroring of byte to 16 bits */
+			ptr = &gba->VRAM[address & ~1];
             data = (data << 8) | data;
             size = WIDTH_16;
 		}
 	} else if (address >= IO_REG_1KB && address <= IO_REG_1KB_END) {
         writeIO(gba, address-IO_REG_1KB, data, size);
         return;
-    } else if (address >= PALETTE_RAM_1KB && address <= PALETTE_RAM_1KB_END) {
-		ptr = &gba->PaletteRAM[address - PALETTE_RAM_1KB];
+    } else if (address >= PALETTE_RAM_1KB && address <= PALETTE_RAM_1KB_MIRROR_END) {
+        address -= PALETTE_RAM_1KB;
+        address &= 0x000003FF;
+		ptr = &gba->PaletteRAM[address];
 
 		/* Palette RAM only supports 16 and 32 bit writes, writing a byte to the addressed
 		 * halfword is going to mirror it to both upper and lower byte */
 		if (size == WIDTH_8) {
 			/* Halfword aligned */
-			ptr = &gba->PaletteRAM[(address & ~1) - PALETTE_RAM_1KB];
+			ptr = &gba->PaletteRAM[address & ~1];
             data = (data << 8) | data;
             size = WIDTH_16;
 		}
-	} else if (address >= OAM_1KB && address <= OAM_1KB_END) {
-        ptr = &gba->OAM[address - OAM_1KB];
+	} else if (address >= OAM_1KB && address <= OAM_1KB_MIRROR_END) {
+        address -= OAM_1KB;
+        address &= 0x000003FF;
+        ptr = &gba->OAM[address];
 
 		/* OAM only supports 16 and 32 bit writes, writing a byte to the addressed
-		 * halfword is going to mirror it to both upper and lower byte */
+		 * halfword is going to do nothing */
 		if (size == WIDTH_8) {
-			/* Halfword aligned */
-			ptr = &gba->OAM[(address & ~1) - OAM_1KB];
-            data = (data << 8) | data;
-            size = WIDTH_16;
+            return;
 		}
 
     }
@@ -434,7 +455,7 @@ static void writeIO_byte(GBA* gba, uint32_t ioaddr, uint8_t data) {
             /* Enable is being set high when it was previously low */
             gba->IO[ioaddr] = data;
             reloadDMAInternal(gba, DMAx);
-               
+
             uint16_t CNT_H = readIO_internal(gba, DMA0CNT_H+DMAx*0xC, WIDTH_16);
             if ((CNT_H >> 12 & 0b11) == 0) {
                 /* If it must start immediately, start it */
@@ -594,6 +615,7 @@ static void stepDMA(GBA* gba, uint8_t N) {
     uint32_t dest = gba->dmaDAD[N];
     uint32_t source = gba->dmaSAD[N];
     uint32_t wordCount = gba->dmaWordCount[N];
+
 
     if (wordSize == 4) {
         /* 32 bit chunk size */
