@@ -33,8 +33,7 @@ static void initialiseIO(GBA* gba) {
 
 /* ----------------------------------------------------- */
 
-void initialiseGBA(GBA* gba, GamePak* gamepak, uint8_t* biosBuffer, size_t biosSize) {
-
+void initialiseGBA(GBA* gba, GamePak gamepak, uint8_t* biosBuffer, size_t biosSize) {
 	gba->gamepak = gamepak;
 	gba->runningStepFrame = false;
     gba->cycles = 0;
@@ -229,12 +228,12 @@ uint32_t busRead(GBA* gba, uint32_t address, uint8_t size) {
 				break;
 		}
 
-		if (relativeAddress > (gba->gamepak->size - 1)) {
+		if (relativeAddress > (gba->gamepak.size - 1)) {
 			// printf("[WARNING] Read attempt from gamepak to an invalid address %08x\n", address);
 			return 0;
 		}
 
-		ptr = &gba->gamepak->allocated[relativeAddress];
+		ptr = &gba->gamepak.allocated[relativeAddress];
 		
 	} else if (address >= INT_WRAM_32KB && address <= INT_WRAM_32KB_END) {
 		/* Read from internal work RAM */

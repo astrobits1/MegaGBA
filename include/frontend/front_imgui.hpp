@@ -33,16 +33,20 @@ public:
     ~Window();
 };
 
-class DebuggerWindow : public Window {
+class DisassemblerWindow : public Window {
 public:
-    DebuggerWindow(Context* c) : Window(c) {};
+    void initialise();
+    void show();
+
+    DisassemblerWindow(Context* c) : Window(c) {}
 };
 
 class MainWindow : public Window {
 public:
-    DebuggerWindow debugWin;
+    DisassemblerWindow disassemblerWin;
 
-    MainWindow(Context* c) : Window(c), debugWin(c) {};
+    void initialise();
+    MainWindow(Context* c) : Window(c), disassemblerWin(c) {};
 };
 
 class Context {

@@ -205,7 +205,7 @@ struct GBA {
 	uint8_t ppuHState; 					// Current Horizontal State of PPU
 
 	/* ----------------- Emulator ---------------- */
-	GamePak* gamepak; 					/* Cartridge containing allocated code and important info
+	GamePak gamepak; 					/* Cartridge containing allocated code and important info
 										   about the game */
 	bool runningStepFrame; 			    /* Flag used to keep track of when its running the frame
                                            and when to stop when calling stepGBAFrame */
@@ -271,7 +271,7 @@ extern "C" {
 
 void stepGBAFrame(GBA* gba);
 
-void initialiseGBA(GBA* gba, GamePak* gamepak, uint8_t* biosROM, size_t biosSize);
+void initialiseGBA(GBA* gba, GamePak gamepak, uint8_t* biosROM, size_t biosSize);
 void freeGBA(GBA* gba);
 void keyinputSet(GBA* gba, KEYINPUT_CODE code);
 void keyinputReset(GBA* gba, KEYINPUT_CODE code);

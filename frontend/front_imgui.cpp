@@ -15,9 +15,7 @@
 /* ------------------------------------------------------------------- */
 
 static bool initialiseSDL(SDL_Window*& window, SDL_Renderer*& renderer) {
-    SDL_Init(SDL_INIT_EVERYTHING);
-
-    SDL_Window* win = SDL_CreateWindow("MegaGBA", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 240 * DISPLAY_SCALING, (160 + MENU_HEIGHT_PX)* DISPLAY_SCALING, SDL_WINDOW_SHOWN);
+    SDL_Window* win = SDL_CreateWindow("MegaGBA", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 0, 0, SDL_WINDOW_SHOWN);
 
     if (win == NULL) return false;          /* Failed to create screen */
 
@@ -28,7 +26,6 @@ static bool initialiseSDL(SDL_Window*& window, SDL_Renderer*& renderer) {
     window = win;
     renderer = rend;
 
-    SDL_RenderSetScale(rend, DISPLAY_SCALING, DISPLAY_SCALING);
     SDL_RenderClear(rend);
     return true;
 }
@@ -50,6 +47,16 @@ static void ImGuiEvents(Context* ctx, SDL_Event* event) {
                     }
                 }
             }
+        } else if (event->window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
+            /* Scan through all child and descendent windows of context and set it to currenet
+             * context if window ID matches */
+            for (int i=0; i<ctx->windows.size(); i++) {
+                Window* win = ctx->windows.at(i);
+                if (event->window.windowID == SDL_GetWindowID(win->window)) {
+                    ImGui::SetCurrentContext(win->imguiCtx);
+                    break;
+                }
+            }
         }
     }
 
@@ -61,14 +68,14 @@ static void ImGuiEvents(Context* ctx, SDL_Event* event) {
 static void SDLEvents(Context* ctx) {
     GBA* gba = ctx->gba;
     /* We listen for events like keystrokes and window closing */
-    SDL_Event event;
+    SDL_Event event = {};
 
     while (SDL_PollEvent(&event)) {
         ImGuiEvents(ctx, &event);
 
         if (event.type == SDL_QUIT) {
             ctx->quit = true;
-        } else if (event.type == SDL_KEYDOWN && event.key.repeat == 0) {
+        } else if (event.type == SDL_KEYDOWN && event.key.repeat == 0 && SDL_GetKeyboardFocus() == ctx->mainWin.window) {
             /* Handle keydown by updating KEYINPUT */
             switch (event.key.keysym.scancode) {
                 case SDL_SCANCODE_DOWN: keyinputReset(gba, KEYINPUT_DPDOWN); break;
@@ -110,7 +117,6 @@ static void SDLEvents(Context* ctx) {
 static void cleanSDL(SDL_Window* win, SDL_Renderer* rend) {
 	SDL_DestroyRenderer(rend);
     SDL_DestroyWindow(win);
-    SDL_Quit();
 }
 
 /* ---------------- Window ---------------------------- */
@@ -184,27 +190,150 @@ Window::~Window() {
 
 /* ------------------- Main Window -------------------- */
 
+void MainWindow::initialise() {
+    Window::initialise();
+
+    int w = WIDTH_PX * DISPLAY_SCALING;
+    int h = (HEIGHT_PX + MENU_HEIGHT_PX) * DISPLAY_SCALING;
+
+    SDL_Rect displayBounds;
+    SDL_GetDisplayBounds(0, &displayBounds);
+    int scx = displayBounds.x + (displayBounds.w / 2);
+    int scy = displayBounds.y + (displayBounds.h / 2);
+
+    SDL_SetWindowSize(this->window, w, h);
+    SDL_SetWindowPosition(this->window, 0, 0);
+
+    SDL_SetWindowTitle(this->window, "MegaGBA");
+    SDL_RenderSetScale(this->renderer, DISPLAY_SCALING, DISPLAY_SCALING);
+}
+
+/* ------------------- Debugger Window ---------------- */
+
+void DisassemblerWindow::initialise() {
+    Window::initialise();
+
+    int w = 650;
+    int h = 800;
+
+    int mx, my, mw, mh;
+    SDL_GetWindowSize(this->context->mainWin.window, &mw, &mh);
+    SDL_GetWindowPosition(this->context->mainWin.window, &mx, &my);
+
+    SDL_SetWindowPosition(this->window, 0, 0);
+    SDL_SetWindowSize(this->window, w, h);
+
+    SDL_SetWindowTitle(this->window, "Disassembler");
+}
+
+void DisassemblerWindow::show() {
+    Window::show();
+}
+
+/* ----------------- GUI Rendering -------------------- */
+
+
+static void renderMainGUI(Context* ctx) {
+    PUSH_IMGUI_CTX();
+
+    ImGui::StyleColorsDark();
+    ImGui::SetCurrentContext(ctx->mainWin.imguiCtx);
+    ImGui_ImplSDLRenderer2_NewFrame();
+	ImGui_ImplSDL2_NewFrame();
+	ImGui::NewFrame();
+
+    ImGui::SetNextWindowSize(ImVec2(240*DISPLAY_SCALING, MENU_HEIGHT_PX*DISPLAY_SCALING));
+	ImGui::SetNextWindowPos(ImVec2(0, 0));
+
+	ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
+
+    ImGui::Begin("MainMenu", NULL, windowFlags);
+    ImGui::SetWindowFontScale(1.8);
+    if (ImGui::BeginMenuBar()) {
+
+		if (ImGui::BeginMenu("File")) {
+            ImGui::SetWindowFontScale(1.8);
+			if (ImGui::MenuItem("Open ROM (.gba)")) {}
+			ImGui::EndMenu();
+		}
+
+        if (ImGui::BeginMenu("Tools")) {
+            ImGui::SetWindowFontScale(1.8);
+			if (ImGui::MenuItem("Disassembler", NULL, &ctx->mainWin.disassemblerWin.showing)) {
+                if (!ctx->mainWin.disassemblerWin.initialised) ctx->mainWin.disassemblerWin.initialise();
+
+                if (ctx->mainWin.disassemblerWin.showing) ctx->mainWin.disassemblerWin.show();
+                else ctx->mainWin.disassemblerWin.hide();
+            }
+			ImGui::EndMenu();
+		}
+
+
+		ImGui::EndMenuBar();
+	}
+
+    ImGui::End();
+    ImGui::Render();
+
+    SDL_RenderSetScale(ctx->mainWin.renderer, 1, 1);
+	ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), ctx->mainWin.renderer);
+
+    POP_IMGUI_CTX();
+}
+
+static void renderDisassemblerGUI(Context* ctx) {
+    PUSH_IMGUI_CTX();
+
+    ImGui::SetCurrentContext(ctx->mainWin.disassemblerWin.imguiCtx);
+    ImGuiIO io = ImGui::GetIO();
+
+#define REL_X(r) (r*(w/io.DisplayFramebufferScale.x))    // r=0->1
+#define REL_Y(r) (r*(h/io.DisplayFramebufferScale.y))   // r=0->1
+
+    ImGui_ImplSDLRenderer2_NewFrame();
+	ImGui_ImplSDL2_NewFrame();
+	ImGui::NewFrame();
+
+    int w, h;
+    SDL_GetWindowSize(ctx->mainWin.disassemblerWin.window, &w, &h);
+
+    ImGui::Begin("Hello");
+    ImGui::SetWindowSize(ImVec2(REL_X(0.5), REL_Y(0.5)));
+	ImGui::SetWindowPos(ImVec2(0, 0));
+
+
+    ImGui::End();
+
+    ImGui::Render();
+
+	ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), ctx->mainWin.disassemblerWin.renderer);
+
+    POP_IMGUI_CTX();
+}
+
 
 /* ---------------- Context --------------------------- */
 Context::Context() : mainWin(this) {
     this->quit = false;
     this->gba = NULL;
 
+    SDL_Init(SDL_INIT_EVERYTHING);
     this->mainWin.initialise();
 
     /* Initialise texture for main window */
     SDL_Texture* text = SDL_CreateTexture(this->mainWin.renderer, SDL_PIXELFORMAT_BGR555, SDL_TEXTUREACCESS_STREAMING, 240, 160);
     if (text == NULL) throw;
-    this->texture = text;
+    this->texture = text; 
 
 }
 
 Context::~Context() {
     if (this->gba != NULL) {
         unloadROM();
-    } 
+    }  
 
     SDL_DestroyTexture(this->texture);
+    SDL_Quit();
 }
 
 void Context::loadROM(std::vector<uint8_t>& buffer, size_t size, std::vector<uint8_t>& biosBuffer, size_t biosSize) {
@@ -221,7 +350,7 @@ void Context::loadROM(std::vector<uint8_t>& buffer, size_t size, std::vector<uin
 
     GamePak gamepak;
     initGamePak(&gamepak, cbuffer, size);
-    initialiseGBA(this->gba, &gamepak, cbiosBuffer, biosSize);
+    initialiseGBA(this->gba, gamepak, cbiosBuffer, biosSize);
 
 }
 
@@ -233,55 +362,7 @@ void Context::unloadROM() {
     this->gba = NULL;
 }
 
-/* ----------------- GUI Rendering -------------------- */
-
-
-static void renderMainGUI(Context* ctx) {
-    ImGui::StyleColorsDark();
-    ImGui::SetCurrentContext(ctx->mainWin.imguiCtx);
-    ImGui_ImplSDLRenderer2_NewFrame();
-	ImGui_ImplSDL2_NewFrame();
-	ImGui::NewFrame();
-
-    ImGui::SetNextWindowSize(ImVec2(240*DISPLAY_SCALING, MENU_HEIGHT_PX*DISPLAY_SCALING));
-	ImGui::SetNextWindowPos(ImVec2(0, 0));
-
-	ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoResize;
-
-    ImGui::Begin("MainMenu", NULL, windowFlags);
-    ImGui::SetWindowFontScale(1.8);
-    if (ImGui::BeginMenuBar()) {
-
-		if (ImGui::BeginMenu("File")) {
-            ImGui::SetWindowFontScale(1.8);
-			if (ImGui::MenuItem("Open ROM (.gba)")) {}
-			ImGui::EndMenu();
-		}
-
-        if (ImGui::BeginMenu("Tools")) {
-            ImGui::SetWindowFontScale(1.8);
-			if (ImGui::MenuItem("Disassembler", NULL, &ctx->mainWin.debugWin.showing)) {
-                if (!ctx->mainWin.debugWin.initialised) ctx->mainWin.debugWin.initialise();
-
-                if (ctx->mainWin.debugWin.showing) ctx->mainWin.debugWin.show();
-                else ctx->mainWin.debugWin.hide();
-            }
-			ImGui::EndMenu();
-		}
-
-
-		ImGui::EndMenuBar();
-	}
-
-    ImGui::End();
-    ImGui::Render();
-
-    SDL_RenderSetScale(ctx->mainWin.renderer, 1, 1);
-	ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), ctx->mainWin.renderer);
-}
-
-/* ----------------------------------------------------- */
-
+/* ---------------------------------------------------------- */
 
 void runFrame(Context* ctx) {
     /* Step frame on emulator */
@@ -289,11 +370,12 @@ void runFrame(Context* ctx) {
 
     /* Render framebuffer to SDL renderer after setting display scale */
     /* Update texture with framebuffer and render it at the end of frame */
+   
     SDL_UpdateTexture(ctx->texture, NULL, &ctx->gba->framebuffer, 240*sizeof(uint16_t));
     SDL_RenderSetScale(ctx->mainWin.renderer, DISPLAY_SCALING, DISPLAY_SCALING);
     SDL_RenderClear(ctx->mainWin.renderer);
 
-    SDLEvents(ctx);
+    SDLEvents(ctx); 
 
     SDL_Rect dstrect;
     dstrect.h = 160;
@@ -303,24 +385,30 @@ void runFrame(Context* ctx) {
 
     SDL_RenderCopy(ctx->mainWin.renderer, ctx->texture, NULL, &dstrect);
 
+    //std::cout << "render copied\n";
+
     /* Render IMGUI to the same renderer as an overlap */
     renderMainGUI(ctx);
     SDL_RenderPresent(ctx->mainWin.renderer);
 
-
+    /* Render sub windows */
+    if (ctx->mainWin.disassemblerWin.showing) {
+        renderDisassemblerGUI(ctx);
+        SDL_RenderPresent(ctx->mainWin.disassemblerWin.renderer);
+    }
 }
 
 
  int frontendImguiMain(std::vector<uint8_t> buffer, size_t size, std::vector<uint8_t> biosBuffer, size_t biosSize) {
-    uint8_t* cbuffer = reinterpret_cast<uint8_t*>(buffer.data());
-    uint8_t* cbiosBuffer = reinterpret_cast<uint8_t*>(biosBuffer.data()); 
-
     try {
         Context ctx;
-        ctx.loadROM(buffer, size, biosBuffer, biosSize);
+        ctx.loadROM(buffer, size, biosBuffer, biosSize); 
+
         /* Mainloop */
-        while (!ctx.quit) runFrame(&ctx);
-        
+        while (!ctx.quit) {
+            runFrame(&ctx); 
+        }
+    
         ctx.unloadROM();
     } catch (int) {
         std::cout << "Could not initialise SDL\n";

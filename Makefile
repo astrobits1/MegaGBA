@@ -10,6 +10,7 @@ DEBUG=debug
 CC = gcc
 CPPC = g++
 CORE_CFLAGS = -O3 -I$(INCLUDE)
+IMGUI_CFLAGS = -O3 -Iimgui
 
 EXE = megagba
 
@@ -27,7 +28,7 @@ front_imgui.o : $(INCLUDE_FRONTEND)/front_imgui.hpp \
 	$(CPPC) -c $(SRC_FRONTEND)/front_imgui.cpp -I$(INCLUDE) -Iimgui -O3 `sdl2-config --cflags`
 
 main.o : main.cpp
-	$(CPPC) -c main.cpp -I$(INCLUDE) -O3 
+	$(CPPC) -c main.cpp -O3 -I$(INCLUDE) -Iimgui
 # ----------------------------------------------------------------------
 core: libmegagba.a
 
@@ -61,17 +62,17 @@ imgui: libimgui.a
 libimgui.a: $(BIN_IMGUI)
 	ar rcs libimgui.a $(BIN_IMGUI)
 imgui.o: imgui/imgui.cpp
-	$(CPPC) -c imgui/imgui.cpp $(CFLAGS) -Iimgui
+	$(CPPC) -c imgui/imgui.cpp $(IMGUI_CFLAGS)
 imgui_draw.o: imgui/imgui_draw.cpp
-	$(CPPC) -c imgui/imgui_draw.cpp $(CFLAGS) -Iimgui
+	$(CPPC) -c imgui/imgui_draw.cpp $(IMGUI_CFLAGS)
 imgui_tables.o: imgui/imgui_tables.cpp
-	$(CPPC) -c imgui/imgui_tables.cpp $(CFLAGS) -Iimgui
+	$(CPPC) -c imgui/imgui_tables.cpp $(IMGUI_CFLAGS)
 imgui_widgets.o: imgui/imgui_widgets.cpp
-	$(CPPC) -c imgui/imgui_widgets.cpp $(CFLAGS) -Iimgui
+	$(CPPC) -c imgui/imgui_widgets.cpp $(IMGUI_CFLAGS)
 imgui_impl_sdlrenderer2.o: imgui/backends/imgui_impl_sdlrenderer2.cpp
-	$(CPPC) -c imgui/backends/imgui_impl_sdlrenderer2.cpp $(CFLAGS) -Iimgui
+	$(CPPC) -c imgui/backends/imgui_impl_sdlrenderer2.cpp $(IMGUI_CFLAGS)
 imgui_impl_sdl2.o: imgui/backends/imgui_impl_sdl2.cpp
-	$(CPPC) -c imgui/backends/imgui_impl_sdl2.cpp $(CFLAGS) -Iimgui
+	$(CPPC) -c imgui/backends/imgui_impl_sdl2.cpp $(IMGUI_CFLAGS)
 
 # --------------------------------------------------------------------
 clean:
