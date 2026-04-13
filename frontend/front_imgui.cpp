@@ -351,11 +351,11 @@ void Context::loadROM(std::vector<uint8_t>& buffer, size_t size, std::vector<uin
     GamePak gamepak;
     initGamePak(&gamepak, cbuffer, size);
     initialiseGBA(this->gba, gamepak, cbiosBuffer, biosSize);
-
 }
 
 void Context::unloadROM() {
     /* File and ROM buffers are completely left untouched */
+    freeGamePak(&this->gba->gamepak);
     freeGBA(this->gba);
     delete this->gba;
 
@@ -384,8 +384,6 @@ void runFrame(Context* ctx) {
     dstrect.y = MENU_HEIGHT_PX;
 
     SDL_RenderCopy(ctx->mainWin.renderer, ctx->texture, NULL, &dstrect);
-
-    //std::cout << "render copied\n";
 
     /* Render IMGUI to the same renderer as an overlap */
     renderMainGUI(ctx);

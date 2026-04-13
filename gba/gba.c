@@ -207,7 +207,23 @@ uint32_t busRead(GBA* gba, uint32_t address, uint8_t size) {
     gba->cycles++;
 
 	/* We're reading a 32/16/8 bit value from the given address */
-    if (address >= BIOS_ROM_16KB && address <= BIOS_ROM_16KB_END) {
+    if (address >= EXT_SRAM_64KB && address <= EXT_SRAM_64KB_END) {
+        if (gba->gamepak.backupId != BACKUP_SRAM_32KB) return 0;
+
+        address -= EXT_SRAM_64KB;
+        address &= 0x7FFF;
+
+        uint8_t byte = gba->gamepak.sram[address];
+        uint32_t read = byte;
+
+        /* Only 8 bit reads are supported, mirror if necessary */
+        switch (size) {
+            case WIDTH_16: read = byte | (byte << 8); break;
+            case WIDTH_32: read = byte | (byte << 8) | (byte << 16) | (byte << 24); break;
+        }
+
+        return read;
+    } else if (address >= BIOS_ROM_16KB && address <= BIOS_ROM_16KB_END) {
         /* Read from BIOS ROM that may or may not be available */
         if (gba->biosROM == NULL) return 0;
         if (address > gba->biosSize-1) return 0;
@@ -296,7 +312,18 @@ void busWrite(GBA* gba, uint32_t address, uint32_t data, uint8_t size) {
     /* Write cycle */
     gba->cycles++;
 
-	if (address >= INT_WRAM_32KB && address <= INT_WRAM_32KB_MIRROR_END) {
+    if (address >= EXT_SRAM_64KB && address <= EXT_SRAM_64KB_END) {
+        if (gba->gamepak.backupId != BACKUP_SRAM_32KB) return;
+
+        address -= EXT_SRAM_64KB;
+        address &= 0x7FFF;
+
+        /* Only 8 bit writes are supported */
+        data &= 0xFF;
+        size = WIDTH_8;
+
+        ptr = &gba->gamepak.sram[address];
+    } else if (address >= INT_WRAM_32KB && address <= INT_WRAM_32KB_MIRROR_END) {
 		/* Write to internal workram with current size and little endian formatting */
         address -= INT_WRAM_32KB;
         address &= 0x00007FFF;
