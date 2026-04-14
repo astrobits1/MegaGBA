@@ -4,31 +4,15 @@
 #include <backends/imgui_impl_sdl2.h>
 #include <backends/imgui_impl_sdlrenderer2.h>
 
-#include <frontend/front_imgui.hpp>
+#include <frontend/context.hpp>
 
 #include <iostream>
 #include <vector>
-#include <algorithm>
-
+#include <unistd.h>
+#include <sys/select.h>
 
 
 /* ------------------------------------------------------------------- */
-
-static bool initialiseSDL(SDL_Window*& window, SDL_Renderer*& renderer) {
-    SDL_Window* win = SDL_CreateWindow("MegaGBA", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 0, 0, SDL_WINDOW_SHOWN);
-
-    if (win == NULL) return false;          /* Failed to create screen */
-
-    SDL_Renderer* rend = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
-
-    if (rend == NULL) return false;  
-
-    window = win;
-    renderer = rend;
-
-    SDL_RenderClear(rend);
-    return true;
-}
 
 static void ImGuiEvents(Context* ctx, SDL_Event* event) {
     if (event->type == SDL_WINDOWEVENT) {
@@ -114,122 +98,6 @@ static void SDLEvents(Context* ctx) {
     }
 }
 
-static void cleanSDL(SDL_Window* win, SDL_Renderer* rend) {
-	SDL_DestroyRenderer(rend);
-    SDL_DestroyWindow(win);
-}
-
-/* ---------------- Window ---------------------------- */
-
-Window::Window(Context* ctx) {
-    this->context = ctx;
-}
-
-void Window::initialise() {
-    ImGuiContext* prevContext = ImGui::GetCurrentContext();
-
-    /* Initialise SDL window and renderer */
-    bool doneInit = initialiseSDL(this->window, this->renderer);
-    if (!doneInit) throw;
-
-    /* Add SDL window to context SDL windows list */
-    this->context->windows.push_back(this);
-
-    /* Initialise ImGUI context for window */
-    ImGuiContext* imguiCtx = ImGui::CreateContext();
-    /* Created context auto set to current context */
-    this->imguiCtx = imguiCtx;
-    ImGui::SetCurrentContext(imguiCtx);
-
-	ImGui_ImplSDLRenderer2_Init(this->renderer);
-    ImGui_ImplSDL2_InitForSDLRenderer(this->window, this->renderer);
-
-    this->initialised = true;
-    this->showing = true;
-
-    if (prevContext != NULL) ImGui::SetCurrentContext(prevContext);
-}
-
-void Window::hide() {
-    if (!this->initialised) return;
-
-    this->showing = false;
-    SDL_HideWindow(this->window);
-}
-
-void Window::show() {
-    if (!this->initialised) return;
-
-    this->showing = true;
-    SDL_ShowWindow(this->window);
-}
-
-Window::~Window() {
-    if (this->initialised) {
-        ImGuiContext* prevContext = ImGui::GetCurrentContext();
-
-        /* Destroy main window ImGUI context and then SDL components */
-        ImGui::SetCurrentContext(this->imguiCtx);
-        ImGui_ImplSDLRenderer2_Shutdown();
-        ImGui_ImplSDL2_Shutdown();
-
-        ImGui::SetCurrentContext(this->imguiCtx);
-        ImGui::DestroyContext();
-
-        /* Manage SDL Window list for context */
-        std::vector<Window*>* vec = &this->context->windows;
-        vec->erase(std::remove(vec->begin(), vec->end(), (Window*)this), vec->end());
-
-        cleanSDL(this->window, this->renderer);
-
-        if (this->imguiCtx != prevContext) {
-            ImGui::SetCurrentContext(prevContext);
-        }
-    }
-}
-
-/* ------------------- Main Window -------------------- */
-
-void MainWindow::initialise() {
-    Window::initialise();
-
-    int w = WIDTH_PX * DISPLAY_SCALING;
-    int h = (HEIGHT_PX + MENU_HEIGHT_PX) * DISPLAY_SCALING;
-
-    SDL_Rect displayBounds;
-    SDL_GetDisplayBounds(0, &displayBounds);
-    int scx = displayBounds.x + (displayBounds.w / 2);
-    int scy = displayBounds.y + (displayBounds.h / 2);
-
-    SDL_SetWindowSize(this->window, w, h);
-    SDL_SetWindowPosition(this->window, 0, 0);
-
-    SDL_SetWindowTitle(this->window, "MegaGBA");
-    SDL_RenderSetScale(this->renderer, DISPLAY_SCALING, DISPLAY_SCALING);
-}
-
-/* ------------------- Debugger Window ---------------- */
-
-void DisassemblerWindow::initialise() {
-    Window::initialise();
-
-    int w = 650;
-    int h = 800;
-
-    int mx, my, mw, mh;
-    SDL_GetWindowSize(this->context->mainWin.window, &mw, &mh);
-    SDL_GetWindowPosition(this->context->mainWin.window, &mx, &my);
-
-    SDL_SetWindowPosition(this->window, 0, 0);
-    SDL_SetWindowSize(this->window, w, h);
-
-    SDL_SetWindowTitle(this->window, "Disassembler");
-}
-
-void DisassemblerWindow::show() {
-    Window::show();
-}
-
 /* ----------------- GUI Rendering -------------------- */
 
 
@@ -287,18 +155,17 @@ static void renderDisassemblerGUI(Context* ctx) {
     ImGui::SetCurrentContext(ctx->mainWin.disassemblerWin.imguiCtx);
     ImGuiIO io = ImGui::GetIO();
 
+    int w, h;
+    SDL_GetWindowSize(ctx->mainWin.disassemblerWin.window, &w, &h);
 #define REL_X(r) (r*(w/io.DisplayFramebufferScale.x))    // r=0->1
 #define REL_Y(r) (r*(h/io.DisplayFramebufferScale.y))   // r=0->1
 
     ImGui_ImplSDLRenderer2_NewFrame();
 	ImGui_ImplSDL2_NewFrame();
-	ImGui::NewFrame();
-
-    int w, h;
-    SDL_GetWindowSize(ctx->mainWin.disassemblerWin.window, &w, &h);
+	ImGui::NewFrame(); 
 
     ImGui::Begin("Hello");
-    ImGui::SetWindowSize(ImVec2(REL_X(0.5), REL_Y(0.5)));
+    ImGui::SetWindowSize(ImVec2(REL_X(1), REL_Y(1)));
 	ImGui::SetWindowPos(ImVec2(0, 0));
 
 
@@ -313,10 +180,7 @@ static void renderDisassemblerGUI(Context* ctx) {
 
 
 /* ---------------- Context --------------------------- */
-Context::Context() : mainWin(this) {
-    this->quit = false;
-    this->gba = NULL;
-
+Context::Context() : mainWin(this), console(this), quit(false), gba(NULL) {
     SDL_Init(SDL_INIT_EVERYTHING);
     this->mainWin.initialise();
 
@@ -364,9 +228,29 @@ void Context::unloadROM() {
 
 /* ---------------------------------------------------------- */
 
+/* Check if input is available in STDIN */
+bool inputAvailable() {
+  struct timeval tv;
+  fd_set fds;
+  tv.tv_sec = 0;
+  tv.tv_usec = 0;
+  FD_ZERO(&fds);
+  FD_SET(STDIN_FILENO, &fds);
+  select(STDIN_FILENO+1, &fds, NULL, NULL, &tv);
+  return (FD_ISSET(0, &fds));
+}
+
 void runFrame(Context* ctx) {
     /* Step frame on emulator */
     stepGBAFrame(ctx->gba);
+
+    /* Check for on terminal console inputs */
+    if (inputAvailable()) {
+        std::string input;
+        std::cin >> input;
+        std::string output = ctx->console.run(input);
+        std::cout << output;
+    }
 
     /* Render framebuffer to SDL renderer after setting display scale */
     /* Update texture with framebuffer and render it at the end of frame */

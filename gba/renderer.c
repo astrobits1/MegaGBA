@@ -1,6 +1,7 @@
 #include <gba/gba.h>
 #include <gba/renderer.h>
 #include <string.h>
+#include <stdio.h>
 
 #define TILE_DATA_BASE_TEXT     0x10000
 #define TILE_DATA_BASE_BITMAP   0x14000
@@ -1771,7 +1772,6 @@ static void renderLinebuffer(GBA* gba, uint16_t linebuffer[]) {
 
 static void renderBGMode0Scanline(GBA* gba) {
     /* BG Mode 0 - Text mode only */
-
     /* Use one of BG0-3 based on priority */
   
     uint8_t exclude = 0b0000;            /* BG0-3 are supported in mode 0 */
@@ -1797,7 +1797,6 @@ static void renderBGMode0Scanline(GBA* gba) {
 
 static void renderBGMode1Scanline(GBA* gba) {
     /* BG Mode 1 - Hybrid - BG0-1 Text Mode and BG2 Rot/Scaling mode, BG3 not supported */
-
     uint8_t bgEnabled = gba->latchedDISPCNT >> 8 & 0xF;
     bool spritesEnabled = gba->latchedDISPCNT >> 12 & 1;
     uint8_t exclude = 0b1000;
@@ -2105,6 +2104,7 @@ void stepPPU(GBA* gba) {
 				} else {
 					/* Latch DISPCNT if not entering VBLANK */
 					latchDISPCNT(gba);
+                    //printf("Y: %d\n", gba->IO[VCOUNT]);
 				}
 
                 schedulePPU(gba, 960);

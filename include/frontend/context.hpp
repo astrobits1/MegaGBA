@@ -3,6 +3,8 @@
 
 #include <SDL2/SDL.h>
 #include <gba/gba.h>
+#include <frontend/console.hpp>
+#include <frontend/window.hpp>
 #include <imgui.h>
 #include <vector>
 #include <stdint.h>
@@ -15,46 +17,15 @@
 
 class Context;
 
-class Window {
-public:
-    SDL_Window* window = NULL;
-    SDL_Renderer* renderer = NULL;
-
-    Context* context = NULL;
-    ImGuiContext* imguiCtx = NULL;
-
-    bool showing = false;
-    bool initialised = false;
-
-    void initialise();
-    void show();
-    void hide();
-    Window(Context* ctx);
-    ~Window();
-};
-
-class DisassemblerWindow : public Window {
-public:
-    void initialise();
-    void show();
-
-    DisassemblerWindow(Context* c) : Window(c) {}
-};
-
-class MainWindow : public Window {
-public:
-    DisassemblerWindow disassemblerWin;
-
-    void initialise();
-    MainWindow(Context* c) : Window(c), disassemblerWin(c) {};
-};
-
 class Context {
 public:
     bool quit = false;
 
     /* SDL State */
     SDL_Texture* texture;
+
+    /* Console state */
+    Console console;
 
     /* GUI State */
     std::vector<Window*> windows;

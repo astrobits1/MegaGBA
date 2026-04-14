@@ -10,25 +10,23 @@ DEBUG=debug
 CC = gcc
 CPPC = g++
 CORE_CFLAGS = -O3 -I$(INCLUDE)
+FRONT_CFLAGS = -O3 -I$(INCLUDE) -Iimgui `sdl2-config --cflags`
 IMGUI_CFLAGS = -O3 -Iimgui
 
 EXE = megagba
 
 BIN_CORE = arm7tdmi.o debugGBA.o gamepak.o gba.o renderer.o
+BIN_FRONT = context.o console.o window.o
 BIN_IMGUI = imgui.o imgui_tables.o imgui_draw.o imgui_widgets.o imgui_impl_sdlrenderer2.o imgui_impl_sdl2.o
-
 
 exe: $(EXE)
 
-$(EXE): libmegagba.a libimgui.a front_imgui.o main.o
-	$(CPPC) main.o front_imgui.o -O3 -L. -lmegagba -limgui `sdl2-config --libs` -o $(EXE)
-
-front_imgui.o : $(INCLUDE_FRONTEND)/front_imgui.hpp \
-				$(SRC_FRONTEND)/front_imgui.cpp
-	$(CPPC) -c $(SRC_FRONTEND)/front_imgui.cpp -I$(INCLUDE) -Iimgui -O3 `sdl2-config --cflags`
+$(EXE): libmegagba.a libimgui.a libfrontend.a main.o
+	$(CPPC) main.o -O3 -L. -lfrontend -limgui -lmegagba `sdl2-config --libs` -o $(EXE)
 
 main.o : main.cpp
 	$(CPPC) -c main.cpp -O3 -I$(INCLUDE) -Iimgui
+
 # ----------------------------------------------------------------------
 core: libmegagba.a
 
@@ -55,6 +53,25 @@ renderer.o : $(INCLUDE_CORE)/renderer.h $(INCLUDE_CORE)/gba.h\
 debugGBA.o : $(INCLUDE_CORE)/debugGBA.h \
          $(SRC_CORE)/debugGBA.c
 	$(CC) -c $(SRC_CORE)/debugGBA.c $(CORE_CFLAGS)
+
+# ---------------------------------------------------------------------
+
+frontend: libfrontend.a
+
+libfrontend.a: $(BIN_FRONT)
+	ar rcs libfrontend.a $(BIN_FRONT)
+
+context.o : $(INCLUDE_FRONTEND)/context.hpp \
+				$(SRC_FRONTEND)/context.cpp
+	$(CPPC) -c $(SRC_FRONTEND)/context.cpp $(FRONT_CFLAGS)
+
+console.o : $(INCLUDE_FRONTEND)/console.hpp \
+				$(SRC_FRONTEND)/console.cpp
+	$(CPPC) -c $(SRC_FRONTEND)/console.cpp $(FRONT_CFLAGS)
+
+window.o : $(INCLUDE_FRONTEND)/window.hpp \
+				$(SRC_FRONTEND)/window.cpp
+	$(CPPC) -c $(SRC_FRONTEND)/window.cpp $(FRONT_CFLAGS)
 
 # --------------------------------------------------------------------
 imgui: libimgui.a

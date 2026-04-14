@@ -447,11 +447,20 @@ static void writeIO_byte(GBA* gba, uint32_t ioaddr, uint8_t data) {
 
             goto skipIf;
         }
+        case DISPSTAT+1: {
+            //printf("Writing to LYC: %d\n", data);
+            break;
+        }
         case HALTCNT: {
             uint8_t type = data >> 7 & 1;
             if (type == 0) {
                 /* Halt mode */
                 gba->halted = true;
+                uint16_t IE_data = readIO_internal(gba, IE, WIDTH_16);
+                uint16_t DISPSTAT_data = readIO_internal(gba, DISPSTAT, WIDTH_16);
+
+                //printf("IE at HALT: %04x\n", IE_data);
+                //printf("VC Enable: %d| VC Setting: %d\n", DISPSTAT_data >> 5 & 1, DISPSTAT_data >> 8 & 0xFF);
             } else {
                 /* Stop mode */
             }
@@ -474,6 +483,10 @@ static void writeIO_byte(GBA* gba, uint32_t ioaddr, uint8_t data) {
             DMAxCNT_H_Write = true;
             DMAx = 3;
             break;
+        case DISPCNT: {
+            //printf("DISPCNT written mode: %d\n", data & 0b111);
+            break;
+        }
     }
 
     if (DMAxCNT_H_Write) {
