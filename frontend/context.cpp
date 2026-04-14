@@ -180,7 +180,7 @@ static void renderDisassemblerGUI(Context* ctx) {
 
 
 /* ---------------- Context --------------------------- */
-Context::Context() : mainWin(this), console(this), quit(false), gba(NULL), paused(false) {
+Context::Context() : mainWin(this), console(this), quit(false), gba(NULL), paused(false), stepsLeft(-1), frameSteps(false) {
     SDL_Init(SDL_INIT_EVERYTHING);
     this->mainWin.initialise();
 
@@ -242,7 +242,30 @@ bool inputAvailable() {
 
 void runFrame(Context* ctx) {
     /* Step emulator */
-    if (!ctx->paused) stepGBAFrame(ctx->gba);
+    if (!ctx->paused) {
+        if (ctx->stepsLeft > 0) {
+            /* Pause is scheduled after certain no. of frame/individual steps 
+             * stepsLeft = -1 indicates no scheduling and free frame stepping 
+             *
+             * Frame stepping requires regular checking, while we run individual steps
+             * instantly for a threshold of 10000 before checking */
+            if (ctx->frameSteps) {
+                stepGBAFrame(ctx->gba);
+                ctx->stepsLeft--;
+            } else {
+                for (int i=0; i<10000 && ctx->stepsLeft>0; i++) {
+                    stepGBAStep(ctx->gba);
+                    ctx->stepsLeft--;
+                }
+            }
+
+            if (ctx->stepsLeft == 0) {
+                ctx->stepsLeft = -1;
+                ctx->frameSteps = false;
+                ctx->paused = true;
+            }
+        } else stepGBAFrame(ctx->gba);
+    }
 
     /* Check for on terminal console inputs */
     if (inputAvailable()) {

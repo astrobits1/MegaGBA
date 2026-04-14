@@ -28,6 +28,8 @@ public:
 
     /* Console state */
     Console console;
+    int stepsLeft;
+    bool frameSteps;
 
     /* GUI State */
     std::vector<Window*> windows;

@@ -45,6 +45,7 @@ std::string Console::runCommand(std::string inp) {
             output("Unpaused");
         }
     } else if (cmd == "step") {
+        if (this->ctx->stepsLeft != -1) return error("Emulator is already stepping: " + std::to_string(this->ctx->stepsLeft) + " left");
         if (!this->ctx->paused) return error("Emulator must be paused for manual stepping");
 
         bool frame = false;
@@ -71,12 +72,13 @@ std::string Console::runCommand(std::string inp) {
         }
         
         if (frame) {
-            for (int i=0; i<n; i++) stepGBAFrame(this->ctx->gba);
-            output("Stepped " + std::to_string(n) + " frames");
+            this->ctx->frameSteps = true;
         } else {
-            for (int i=0; i<n; i++) stepGBAStep(this->ctx->gba);
-            output("Stepped " + std::to_string(n) + " times");
+            this->ctx->frameSteps = false;
         }
+
+        this->ctx->stepsLeft = n;
+        this->ctx->paused = false;
     } else if (cmd == "quit") {
         this->ctx->quit = true;
         output("Quitting Emulator");
