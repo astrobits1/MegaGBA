@@ -420,7 +420,8 @@ bool rawRead(GBA* gba, uint32_t address, uint8_t size, uint32_t* readTo) {
 		ptr = &gba->VRAM[address];
 	} else if (address >= IO_REG_1KB && address <= IO_REG_1KB_END) {
 		/* Read from IO register */
-		return readIO_internal(gba, address-IO_REG_1KB, size);
+		*readTo = readIO_internal(gba, address-IO_REG_1KB, size);
+        return true;
 	} else if (address >= PALETTE_RAM_1KB && address <= PALETTE_RAM_1KB_MIRROR_END) {
 		/* Read from Palette RAM */
         address -= PALETTE_RAM_1KB;

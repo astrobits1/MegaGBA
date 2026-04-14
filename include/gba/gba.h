@@ -54,9 +54,9 @@ enum {
 };
 
 enum {
-	WIDTH_8,
-	WIDTH_16,
-	WIDTH_32
+	WIDTH_8 = 1,
+	WIDTH_16 = 2,
+	WIDTH_32 = 4
 };
 
 typedef enum {
@@ -243,6 +243,13 @@ struct GBA {
     uint32_t dmaSAD[4];
     uint32_t dmaDAD[4];
     uint32_t dmaWordCount[4];
+
+    /* --------------- Debug --------------------- */
+    /*
+    bool debugEnabled;
+    bool traceLogEnabled;
+    bool memoryLogEnabled;
+    */
 	/* ------------------------------------------- */
 
 };

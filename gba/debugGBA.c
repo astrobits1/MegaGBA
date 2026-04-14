@@ -3,9 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#ifdef DEBUG_ENABLED
 
-bool DEBUG_TRACE_FLAG = false;
 void (*Dissembler_ARM_LUT[4096])(GBA* gba, uint32_t opcode);
 void (*Dissembler_THUMB_LUT[256])(GBA* gba, uint16_t opcode);
 
@@ -659,8 +657,6 @@ void printStateARM(GBA* gba, uint32_t opcode) {
 				gba->CPSR>>31, (gba->CPSR>>30)&1, (gba->CPSR>>29)&1, (gba->CPSR>>28)&1, opcode);
 	Dissembler_ARM_LUT[((opcode & 0x0FF00000) >> 16) | ((opcode >> 4) & 0xF)](gba, opcode);
 	printf("\n");
-
-    if (DEBUG_TRACE_FLAG) {DEBUG_SET_BREAKPOINT("");}
 #endif
 }
 
@@ -679,9 +675,6 @@ void printStateTHUMB(GBA* gba, uint16_t opcode) {
 				gba->CPSR>>31, (gba->CPSR>>30)&1, (gba->CPSR>>29)&1, (gba->CPSR>>28)&1);
 	Dissembler_THUMB_LUT[opcode >> 8](gba, opcode);
 	printf("\n");
-
-    if (DEBUG_TRACE_FLAG) {DEBUG_SET_BREAKPOINT("");}
 #endif
 }
 
-#endif
