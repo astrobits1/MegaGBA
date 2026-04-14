@@ -180,7 +180,7 @@ static void renderDisassemblerGUI(Context* ctx) {
 
 
 /* ---------------- Context --------------------------- */
-Context::Context() : mainWin(this), console(this), quit(false), gba(NULL) {
+Context::Context() : mainWin(this), console(this), quit(false), gba(NULL), paused(false) {
     SDL_Init(SDL_INIT_EVERYTHING);
     this->mainWin.initialise();
 
@@ -241,15 +241,18 @@ bool inputAvailable() {
 }
 
 void runFrame(Context* ctx) {
-    /* Step frame on emulator */
-    stepGBAFrame(ctx->gba);
+    /* Step emulator */
+    if (!ctx->paused) stepGBAFrame(ctx->gba);
 
     /* Check for on terminal console inputs */
     if (inputAvailable()) {
-        std::string input;
-        std::cin >> input;
-        std::string output = ctx->console.run(input);
+        std::string line;
+        std::getline(std::cin, line);
+
+        std::string output = ctx->console.runCommand(line);
         std::cout << output;
+        /* For next input */
+        std::cout << "> " << std::flush;
     }
 
     /* Render framebuffer to SDL renderer after setting display scale */
@@ -287,10 +290,16 @@ void runFrame(Context* ctx) {
         ctx.loadROM(buffer, size, biosBuffer, biosSize); 
 
         /* Mainloop */
+        std::cout << "Welcome to MegaGBA\n";
+        std::cout << "You can use the debugging command line to modify and study execution state\n";
+        std::cout << "Type 'help' for command list\n";
+        std::cout << "> " << std::flush;
+
         while (!ctx.quit) {
             runFrame(&ctx); 
         }
-    
+
+        std::cout << "\n";
         ctx.unloadROM();
     } catch (int) {
         std::cout << "Could not initialise SDL\n";

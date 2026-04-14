@@ -28,7 +28,7 @@ main.o : main.cpp
 	$(CPPC) -c main.cpp -O3 -I$(INCLUDE) -Iimgui
 
 # ----------------------------------------------------------------------
-core: libmegagba.a
+libmegagba: libmegagba.a
 
 libmegagba.a: $(BIN_CORE)
 	ar rcs libmegagba.a $(BIN_CORE)
@@ -56,7 +56,7 @@ debugGBA.o : $(INCLUDE_CORE)/debugGBA.h \
 
 # ---------------------------------------------------------------------
 
-frontend: libfrontend.a
+libfrontend: libfrontend.a
 
 libfrontend.a: $(BIN_FRONT)
 	ar rcs libfrontend.a $(BIN_FRONT)
@@ -74,7 +74,7 @@ window.o : $(INCLUDE_FRONTEND)/window.hpp \
 	$(CPPC) -c $(SRC_FRONTEND)/window.cpp $(FRONT_CFLAGS)
 
 # --------------------------------------------------------------------
-imgui: libimgui.a
+libimgui: libimgui.a
 
 libimgui.a: $(BIN_IMGUI)
 	ar rcs libimgui.a $(BIN_IMGUI)

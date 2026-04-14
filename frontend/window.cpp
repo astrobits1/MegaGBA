@@ -115,6 +115,7 @@ void MainWindow::initialise() {
     SDL_SetWindowPosition(this->window, 0, 0);
 
     SDL_SetWindowTitle(this->window, "MegaGBA");
+    SDL_SetWindowAlwaysOnTop(this->window, (SDL_bool)true);
     SDL_RenderSetScale(this->renderer, DISPLAY_SCALING, DISPLAY_SCALING);
 }
 

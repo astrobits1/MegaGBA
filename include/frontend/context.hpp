@@ -19,7 +19,9 @@ class Context;
 
 class Context {
 public:
+    /* Context State */
     bool quit = false;
+    bool paused = false;
 
     /* SDL State */
     SDL_Texture* texture;
@@ -32,7 +34,7 @@ public:
     MainWindow mainWin;
 
     /* Emulator state */
-    GBA* gba;
+    GBA* gba; 
 
     /* Methods */
     void loadROM(std::vector<uint8_t>& buffer, size_t size, std::vector<uint8_t>& biosBuffer, size_t biosSize);
@@ -40,7 +42,6 @@ public:
     Context();
     ~Context();
 };
-
 
 
 int frontendImguiMain(std::vector<uint8_t> buffer, size_t size, std::vector<uint8_t> biosBuffer, size_t biosSize);

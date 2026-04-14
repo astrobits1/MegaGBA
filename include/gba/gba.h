@@ -1,12 +1,15 @@
 #ifndef gba_include_h
 #define gba_include_h
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdint.h>
 #include <stdlib.h> 
 #include <gba/arm7tdmi.h>
 #include <gba/renderer.h>
 #include <gba/gamepak.h>
-
 
 enum {
 	BIOS_ROM_16KB 		= 0x00000000,
@@ -270,11 +273,12 @@ GBAEvent peekEvent(GBA* gba, uint8_t index);
 GBAEvent popEvent(GBA* gba);
 
 /* ------- API ------- */
-#ifdef __cplusplus
-extern "C" {
-#endif
 
+void stepGBAStep(GBA* gba);
 void stepGBAFrame(GBA* gba);
+
+bool rawRead(GBA* gba, uint32_t address, uint8_t size, uint32_t* readTo);
+bool rawWrite(GBA* gba, uint32_t address, uint32_t data, uint8_t size);
 
 void initialiseGBA(GBA* gba, GamePak gamepak, uint8_t* biosROM, size_t biosSize);
 void freeGBA(GBA* gba);

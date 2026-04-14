@@ -111,26 +111,30 @@ void freeGBA(GBA* gba) {
     gba->runningStepFrame = false;
 }
 
+void stepGBAStep(GBA* gba) {
+    if (gba->dmaInProgressMaster) {
+        uint8_t N = 0;
+        for (int i=0; i<4; i++) {
+            if (gba->dmaInProgress[i]) {
+                N = i;
+                break;
+            }
+        }
+ 
+        stepDMA(gba, N);
+    } else {
+		stepCPU(gba);
+    }
+
+    /* Handle scheduler events at CPU instruction boundary or DMA step boundary */
+    handleEvents(gba);
+}
+
 void stepGBAFrame(GBA* gba) {
 	gba->runningStepFrame = true;
 
 	while (gba->runningStepFrame) {
-        if (gba->dmaInProgressMaster) {
-            uint8_t N = 0;
-            for (int i=0; i<4; i++) {
-                if (gba->dmaInProgress[i]) {
-                    N = i;
-                    break;
-                }
-            }
- 
-            stepDMA(gba, N);
-        } else {
-			stepCPU(gba);
-        }
-
-        /* Handle scheduler events at CPU instruction boundary or DMA step boundary */
-        handleEvents(gba);	
+        stepGBAStep(gba);
 	}
 }
 
@@ -194,10 +198,12 @@ static void writeMem(GBA* gba, uint8_t* ptr, uint32_t data, uint8_t size) {
 
 
 
-/* busRead and busWrite are not completely fullproof, you could for example
- * read from write only memory or write to read only memory if you positioned a 16/32bit read/write
- * at the right place. Only first addresses are checked.To prevent this a more thorough 
- * checking is needed which resolves every byte individually
+/* busRead and busWrite need to be given word aligned addresses for 32 bit R/W, 
+ * halfword aligned addresses for 16 bit R/W
+ *
+ * Same for rawRead and rawWrite which are meant to be used by external API caller only
+ * outside the emulator. Restrictions by the bus are not applicable there, but addresses 
+ * must still be aligned as mentioned above
  *
  * Open bus is yet to be emulated */
 
@@ -230,27 +236,14 @@ uint32_t busRead(GBA* gba, uint32_t address, uint8_t size) {
 
         ptr = &gba->biosROM[address];
     } else if (address >= EXT_ROM0_32MB && address <= EXT_ROM2_32MB_END) {
-		uint32_t relativeAddress;
-
-		switch ((address >> 24) & 0xF) {
-			case 0x8:
-				relativeAddress = address - EXT_ROM0_32MB;
-				break;
-			case 0xA:
-				relativeAddress = address - EXT_ROM1_32MB;
-				break;
-			case 0xC:
-				relativeAddress = address - EXT_ROM2_32MB;
-				break;
-		}
-
-		if (relativeAddress > (gba->gamepak.size - 1)) {
+        address &= 0x7FFFFFF;
+		
+		if (address > (gba->gamepak.size - 1)) {
 			// printf("[WARNING] Read attempt from gamepak to an invalid address %08x\n", address);
 			return 0;
 		}
 
-		ptr = &gba->gamepak.allocated[relativeAddress];
-		
+		ptr = &gba->gamepak.allocated[address];	
 	} else if (address >= INT_WRAM_32KB && address <= INT_WRAM_32KB_MIRROR_END) {
 		/* Read from internal work RAM */
         address -= INT_WRAM_32KB;
@@ -384,6 +377,113 @@ void busWrite(GBA* gba, uint32_t address, uint32_t data, uint8_t size) {
     if (ptr == NULL) return;
     writeMem(gba, ptr, data, size);
 }
+
+bool rawRead(GBA* gba, uint32_t address, uint8_t size, uint32_t* readTo) {
+    uint8_t* ptr = NULL;
+
+	/* We're reading a 32/16/8 bit value from the given address */
+    if (address >= EXT_SRAM_64KB && address <= EXT_SRAM_64KB_END) {
+        if (gba->gamepak.backupId != BACKUP_SRAM_32KB) return false;
+
+        address -= EXT_SRAM_64KB;
+        address &= 0x7FFF;
+
+        ptr = &gba->gamepak.sram[address];
+    } else if (address >= BIOS_ROM_16KB && address <= BIOS_ROM_16KB_END) {
+        /* Read from BIOS ROM that may or may not be available */
+        if (gba->biosROM == NULL) return false;
+        if (address > gba->biosSize-1) return false;
+
+        ptr = &gba->biosROM[address];
+    } else if (address >= EXT_ROM0_32MB && address <= EXT_ROM2_32MB_END) {
+		address &= 0x7FFFFFF;
+		if (address > (gba->gamepak.size - 1)) return false;
+
+		ptr = &gba->gamepak.allocated[address];
+	} else if (address >= INT_WRAM_32KB && address <= INT_WRAM_32KB_MIRROR_END) {
+		/* Read from internal work RAM */
+        address -= INT_WRAM_32KB;
+        address &= 0x00007FFF;
+		ptr = &gba->IWRAM[address];
+	} else if (address >= EXT_WRAM_256KB && address <= EXT_WRAM_256KB_MIRROR_END) {
+		/* Read from external work RAM - waitstates apply */
+        address -= EXT_WRAM_256KB;
+        address &= 0x0003FFFF;
+		ptr = &gba->EWRAM[address];
+	} else if (address >= VRAM_96KB && address <= VRAM_96KB_MIRROR_END) {
+		/* Read from Video RAM */
+        address -= VRAM_96KB;
+        address &= 0x0001FFFF;
+        
+        /* 128 KB is mirrored, the top 32 KB are mirror of the 32 KB region under it */
+        if (address > 0x18000) address -= 0x8000;
+		ptr = &gba->VRAM[address];
+	} else if (address >= IO_REG_1KB && address <= IO_REG_1KB_END) {
+		/* Read from IO register */
+		return readIO_internal(gba, address-IO_REG_1KB, size);
+	} else if (address >= PALETTE_RAM_1KB && address <= PALETTE_RAM_1KB_MIRROR_END) {
+		/* Read from Palette RAM */
+        address -= PALETTE_RAM_1KB;
+        address &= 0x000003FF;
+		ptr = &gba->PaletteRAM[address];	
+	} else if (address >= OAM_1KB && address <= OAM_1KB_MIRROR_END) {
+        address -= OAM_1KB;
+        address &= 0x000003FF;
+        ptr = &gba->OAM[address];
+    }
+
+    if (ptr == NULL) return false;
+
+    *readTo = readMem(gba, ptr, size);
+    return true;
+}
+
+bool rawWrite(GBA* gba, uint32_t address, uint32_t data, uint8_t size) {
+    uint8_t* ptr = NULL;
+
+    if (address >= EXT_SRAM_64KB && address <= EXT_SRAM_64KB_END) {
+        if (gba->gamepak.backupId != BACKUP_SRAM_32KB) return false;
+
+        address -= EXT_SRAM_64KB;
+        address &= 0x7FFF;
+
+        ptr = &gba->gamepak.sram[address];
+    } else if (address >= INT_WRAM_32KB && address <= INT_WRAM_32KB_MIRROR_END) {
+		/* Write to internal workram with current size and little endian formatting */
+        address -= INT_WRAM_32KB;
+        address &= 0x00007FFF;
+		ptr = &gba->IWRAM[address];
+	} else if (address >= EXT_WRAM_256KB && address <= EXT_WRAM_256KB_MIRROR_END) {
+        address -= EXT_WRAM_256KB;
+        address &= 0x0003FFFF;
+		ptr = &gba->EWRAM[address];
+	} else if (address >= VRAM_96KB && address <= VRAM_96KB_MIRROR_END) {
+        address -= VRAM_96KB;
+        address &= 0x0001FFFF;
+        
+        /* 128 KB is mirrored, the top 32 KB are mirror of the 32 KB region under it */
+        if (address > 0x18000) address -= 0x8000;
+		ptr = &gba->VRAM[address];
+
+	} else if (address >= IO_REG_1KB && address <= IO_REG_1KB_END) {
+        writeIO_internal(gba, address-IO_REG_1KB, data, size);
+        return true;
+    } else if (address >= PALETTE_RAM_1KB && address <= PALETTE_RAM_1KB_MIRROR_END) {
+        address -= PALETTE_RAM_1KB;
+        address &= 0x000003FF;
+		ptr = &gba->PaletteRAM[address];
+
+	} else if (address >= OAM_1KB && address <= OAM_1KB_MIRROR_END) {
+        address -= OAM_1KB;
+        address &= 0x000003FF;
+        ptr = &gba->OAM[address];
+    }
+
+    if (ptr == NULL) return false;
+    writeMem(gba, ptr, data, size);
+    return true;
+}
+
 
 /* ------------- IO Read/Write -------------- */
 
